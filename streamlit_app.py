@@ -1888,7 +1888,7 @@ elif transformation_choice == "30010031 廣茂隆(八條)":
         m = re.match(r"^(\d{2})(\d{2})-(\d{2})(\d{2})$", sheet_name)
         if m:
             mm_end, dd_end = m.group(3), m.group(4)
-            year = "2025"  # adjust if you want a parameterized year
+            year = "2026"  # adjust if you want a parameterized year
             date_val = f"{year}{mm_end}{dd_end}"
         else:
             # fallback: keep blank if the sheet name isn’t in the expected pattern
