@@ -3659,199 +3659,771 @@ elif transformation_choice == "30010154 亨玖":
             st.download_button("📥 Download Processed File", f, file_name=out_name)
 
 elif transformation_choice == "30010185 瑞星翰德(夜點)":
+    import io
     import re
     import pandas as pd
     import streamlit as st
 
-    # ---- Uploaders: allow both .xls and .xlsx
-    raw_data_file = st.file_uploader("Upload Raw Sales Data (.xls/.xlsx)", type=["xls","xlsx"], key="ruixing_night_raw")
-    mapping_file  = st.file_uploader("Upload Mapping File (.xls/.xlsx)",  type=["xls","xlsx"], key="ruixing_night_map")
+    # ============================================================
+    # 0) Basic Settings
+    # ============================================================
+
+    GROUP_CODE = "30010185"
+    GROUP_NAME = "瑞星翰德(夜點)"
+
+    raw_data_file = st.file_uploader(
+        "Upload Raw Sales Data (.xls/.xlsx)",
+        type=["xls", "xlsx"],
+        key="ruixing_night_raw"
+    )
+
+    mapping_file = st.file_uploader(
+        "Upload Mapping File (.xls/.xlsx)",
+        type=["xls", "xlsx"],
+        key="ruixing_night_map"
+    )
+
+    # ============================================================
+    # 1) Helper Functions
+    # ============================================================
+
+    def pick_engine(uploaded_file):
+        """
+        Legacy .xls files require xlrd.
+        Modern .xlsx files use the default pandas engine.
+        """
+        if (
+            uploaded_file is not None
+            and uploaded_file.name.lower().endswith(".xls")
+        ):
+            return "xlrd"
+
+        return None
+
+
+    def normalize_value(value):
+        """
+        Normalise one customer, product or mapping key.
+
+        Examples:
+        ' R01-33 ' -> 'R01-33'
+        '30010185.0' -> '30010185'
+        """
+        if pd.isna(value):
+            return ""
+
+        value = str(value).strip().upper()
+        value = re.sub(r"\s+", "", value)
+        value = re.sub(r"\.0$", "", value)
+
+        return value
+
+
+    def normalize_series(series):
+        """Normalise a pandas Series."""
+        return series.map(normalize_value)
+
+
+    def parse_period_end(df):
+        """
+        Find the sales period and return its end date as YYYYMMDD.
+
+        Supported examples:
+        2026.08.01-2026.08.30
+        2026/08/01~2026/08/30
+        115/08/01~115/08/30
+        """
+
+        for row_index in range(min(30, len(df))):
+
+            row_text = " ".join(
+                str(df.iat[row_index, col_index]).strip()
+                for col_index in range(df.shape[1])
+                if pd.notna(df.iat[row_index, col_index])
+            )
+
+            # Western calendar
+            western_match = re.search(
+                r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})"
+                r"\s*[-~～至]\s*"
+                r"(\d{4})[./-](\d{1,2})[./-](\d{1,2})",
+                row_text
+            )
+
+            if western_match:
+                end_year = int(western_match.group(4))
+                end_month = int(western_match.group(5))
+                end_day = int(western_match.group(6))
+
+                return (
+                    f"{end_year:04d}"
+                    f"{end_month:02d}"
+                    f"{end_day:02d}"
+                )
+
+            # ROC calendar
+            roc_match = re.search(
+                r"(\d{3})[./-](\d{1,2})[./-](\d{1,2})"
+                r"\s*[-~～至]\s*"
+                r"(\d{3})[./-](\d{1,2})[./-](\d{1,2})",
+                row_text
+            )
+
+            if roc_match:
+                end_year = int(roc_match.group(4)) + 1911
+                end_month = int(roc_match.group(5))
+                end_day = int(roc_match.group(6))
+
+                return (
+                    f"{end_year:04d}"
+                    f"{end_month:02d}"
+                    f"{end_day:02d}"
+                )
+
+        return None
+
+
+    def locate_columns(df):
+        """
+        Find the header row and identify the actual column positions.
+
+        Expected columns:
+        客戶 編號 / 客戶編號
+        客戶名稱
+        產品
+        產品名稱
+        數量
+        """
+
+        required_headers = {
+            "客戶編號",
+            "客戶名稱",
+            "產品",
+            "產品名稱",
+            "數量"
+        }
+
+        for row_index in range(len(df)):
+
+            normalised_headers = [
+                re.sub(
+                    r"\s+",
+                    "",
+                    str(df.iat[row_index, col_index]).strip()
+                )
+                if pd.notna(df.iat[row_index, col_index])
+                else ""
+                for col_index in range(df.shape[1])
+            ]
+
+            if required_headers.issubset(set(normalised_headers)):
+
+                column_positions = {
+                    header: normalised_headers.index(header)
+                    for header in required_headers
+                }
+
+                return row_index, column_positions
+
+        return None, None
+
+
+    def extract_sheet(excel_file, sheet_name):
+        """
+        Extract valid sales rows from one worksheet.
+        """
+
+        df = pd.read_excel(
+            excel_file,
+            sheet_name=sheet_name,
+            header=None
+        )
+
+        if df.empty:
+            return pd.DataFrame(), "empty sheet"
+
+        date_end = parse_period_end(df)
+
+        if date_end is None:
+            return pd.DataFrame(), "period end date not found"
+
+        header_row, columns = locate_columns(df)
+
+        if header_row is None:
+            return pd.DataFrame(), "required header row not found"
+
+        records = []
+
+        for row_index in range(header_row + 1, len(df)):
+
+            customer_code = df.iat[
+                row_index,
+                columns["客戶編號"]
+            ]
+
+            customer_name = df.iat[
+                row_index,
+                columns["客戶名稱"]
+            ]
+
+            product_code = df.iat[
+                row_index,
+                columns["產品"]
+            ]
+
+            product_name = df.iat[
+                row_index,
+                columns["產品名稱"]
+            ]
+
+            quantity = df.iat[
+                row_index,
+                columns["數量"]
+            ]
+
+            # Skip total rows and blank rows
+            if pd.isna(customer_code):
+                continue
+
+            if pd.isna(customer_name):
+                continue
+
+            if pd.isna(product_code):
+                continue
+
+            if pd.isna(product_name):
+                continue
+
+            numeric_quantity = pd.to_numeric(
+                quantity,
+                errors="coerce"
+            )
+
+            if pd.isna(numeric_quantity):
+                continue
+
+            if numeric_quantity == 0:
+                continue
+
+            records.append({
+                "Date": date_end,
+                "CustomerCode_ext": normalize_value(customer_code),
+                "CustomerName": str(customer_name).strip(),
+                "ProductCode": normalize_value(product_code),
+                "ProductName": str(product_name).strip(),
+                "Quantity": numeric_quantity,
+                "Sheet": str(sheet_name)
+            })
+
+        return pd.DataFrame(records), "ok"
+
+
+    def validate_mapping_columns(
+        dataframe,
+        required_columns,
+        sheet_name
+    ):
+        """
+        Check whether all required mapping columns exist.
+        """
+
+        missing_columns = [
+            column
+            for column in required_columns
+            if column not in dataframe.columns
+        ]
+
+        if missing_columns:
+            raise ValueError(
+                f"Mapping sheet '{sheet_name}' is missing columns: "
+                + ", ".join(missing_columns)
+            )
+
+    # ============================================================
+    # 2) Start Processing
+    # ============================================================
 
     if raw_data_file is not None and mapping_file is not None:
-        # -------- Engines (.xls needs xlrd) --------
-        def pick_engine(uploaded):
-            return "xlrd" if uploaded and uploaded.name.lower().endswith(".xls") else None
-        raw_eng = pick_engine(raw_data_file)
-        map_eng = pick_engine(mapping_file)
 
-        # -------- Helpers --------
-        def parse_period_end(df: pd.DataFrame) -> str | None:
-            """
-            Find '日期區間:114/07/01~114/07/30' and return end date as YYYYMMDD.
-            """
-            for r in range(min(30, len(df))):
-                for c in range(min(8, df.shape[1])):
-                    val = df.iat[r, c]
-                    if pd.isna(val):
-                        continue
-                    s = str(val).strip()
-                    m = re.search(r'日期區間[:：]\s*(\d{3})/(\d{2})/(\d{2})\s*~\s*(\d{3})/(\d{2})/(\d{2})', s)
-                    if m:
-                        y2, m2, d2 = int(m.group(4)) + 1911, int(m.group(5)), int(m.group(6))
-                        return f"{y2:04d}{m2:02d}{d2:02d}"
-            return None
+        try:
+            raw_engine = pick_engine(raw_data_file)
+            mapping_engine = pick_engine(mapping_file)
 
-        def unique_only_map(df, key_col, val_col, normalize=lambda s: s):
-            tmp = df[[key_col, val_col]].dropna().copy()
-            tmp["key"] = tmp[key_col].astype(str).map(normalize)
-            tmp["val"] = tmp[val_col].astype(str).str.strip()
-            tmp = tmp.drop_duplicates(subset="key", keep="first")
-            return dict(zip(tmp["key"], tmp["val"]))
+            raw_excel = pd.ExcelFile(
+                raw_data_file,
+                engine=raw_engine
+            )
 
-        norm_code = lambda s: str(s).strip().upper().replace(" ", "").replace(".0", "")
-        norm_sku  = lambda s: str(s).strip().upper()
+            mapping_excel = pd.ExcelFile(
+                mapping_file,
+                engine=mapping_engine
+            )
 
-        # -------- 1) Parse all sheets --------
-        xls = pd.ExcelFile(raw_data_file, engine=raw_eng)
-        sheets = xls.sheet_names
+            # ====================================================
+            # 3) Read All Raw Data Worksheets
+            # ====================================================
 
-        def extract_sheet(sheet_name: str) -> pd.DataFrame:
-            df = pd.read_excel(raw_data_file, sheet_name=sheet_name, header=None, engine=raw_eng)
-            if df.empty:
-                return pd.DataFrame()
+            frames = []
+            parse_log = []
 
-            date_end = parse_period_end(df)
+            for sheet_name in raw_excel.sheet_names:
 
-            # Expect header row: 產品編號 | 品名規格 | 客戶編號 | 客戶名稱 | 數量(...)
-            header_row = None
-            for r in range(len(df)):
-                row = [str(df.iat[r, c]).strip() if (c < df.shape[1] and pd.notna(df.iat[r, c])) else "" for c in range(df.shape[1])]
-                if len(row) >= 5 and row[0] == "產品編號" and row[1] == "品名規格" and row[2] == "客戶編號" and row[3] == "客戶名稱" and "數量" in row[4]:
-                    header_row = r
-                    break
-            if header_row is None:
-                return pd.DataFrame()
+                try:
+                    extracted_data, status = extract_sheet(
+                        raw_excel,
+                        sheet_name
+                    )
 
-            recs = []
-            for r in range(header_row + 1, len(df)):
-                prod_code = df.iat[r, 0] if df.shape[1] > 0 else None
-                prod_name = df.iat[r, 1] if df.shape[1] > 1 else None
-                cust_code = df.iat[r, 2] if df.shape[1] > 2 else None
-                cust_name = df.iat[r, 3] if df.shape[1] > 3 else None
-                qty       = df.iat[r, 4] if df.shape[1] > 4 else None
+                    row_count = len(extracted_data)
 
-                # stop at totals
-                if isinstance(prod_code, str) and prod_code.strip().startswith("總計"):
-                    break
+                    if row_count > 0:
+                        frames.append(extracted_data)
 
-                q = pd.to_numeric(qty, errors="coerce")
-                if pd.isna(q) or q == 0:
-                    continue
-                if not isinstance(cust_name, str) or not cust_name.strip():
-                    continue
+                    parse_log.append(
+                        f"{sheet_name}: "
+                        f"{row_count} rows ({status})"
+                    )
 
-                recs.append({
-                    "Date": date_end,
-                    "CustomerCode_ext": str(cust_code).strip() if cust_code is not None else "",
-                    "CustomerName": cust_name.strip(),
-                    "ProductCode": str(prod_code).strip().upper() if isinstance(prod_code, str) else "",
-                    "ProductName": str(prod_name).strip() if isinstance(prod_name, str) else "",
-                    "Quantity": int(q),
-                    "Sheet": sheet_name
-                })
-            return pd.DataFrame(recs)
+                except Exception as sheet_error:
 
-        frames, parse_log = [], []
-        for s in sheets:
-            try:
-                d = extract_sheet(s)
-                n = 0 if d is None else len(d)
-                if n:
-                    frames.append(d)
-                parse_log.append(f"{s}: {n} rows")
-            except Exception as e:
-                parse_log.append(f"{s}: ERROR → {e}")
+                    parse_log.append(
+                        f"{sheet_name}: "
+                        f"ERROR - {sheet_error}"
+                    )
 
-        if not frames:
-            st.error("No valid rows found in any sheet.\n\nParse summary:\n" + "\n".join(parse_log))
-            st.stop()
+            if not frames:
+                st.error(
+                    "No valid rows were found in any worksheet."
+                    "\n\n"
+                    + "\n".join(parse_log)
+                )
+                st.stop()
 
-        df_all = pd.concat(frames, ignore_index=True)
+            df_all = pd.concat(
+                frames,
+                ignore_index=True
+            )
 
-        # -------- 2) Mappings using Composite Keys --------
-        cust_map = pd.read_excel(mapping_file, sheet_name="Customer Mapping", dtype=str, engine=map_eng)
-        sku_map  = pd.read_excel(mapping_file, sheet_name="SKU Mapping",    dtype=str, engine=map_eng)
+            # ====================================================
+            # 4) Customer Mapping
+            # ====================================================
 
-        cust_map["ASI_CRM_Mapping_Cust_No__c"] = normalize_key(cust_map["ASI_CRM_Mapping_Cust_No__c"])
-        sku_map["ASI_CRM_Mapping_Cust_Code__c"] = normalize_key(sku_map["ASI_CRM_Mapping_Cust_Code__c"])
+            customer_mapping = pd.read_excel(
+                mapping_excel,
+                sheet_name="Customer Mapping",
+                dtype=str
+            )
 
-        # Customer mapping
-        df_customer_mapping = cust_map[normalize_key(cust_map["ASI_CRM_Mapping_Cust_No__c"]) == "30010185"].copy()
-        df_customer_mapping['CompositeKey'] = normalize_key(df_customer_mapping['ASI_CRM_Offtake_Customer_No__c']) + '|' + normalize_key(df_customer_mapping['ASI_CRM_Mapping_Cust_No__c'])
-        df_customer_mapping = df_customer_mapping.drop_duplicates(subset=['CompositeKey'])
+            customer_required_columns = [
+                "ASI_CRM_Mapping_Cust_No__c",
+                "ASI_CRM_Offtake_Customer_No__c",
+                "ASI_CRM_JDE_Cust_No_Formula__c"
+            ]
 
-        df_all["CustomerCode_norm"] = df_all["CustomerCode_ext"].map(norm_code)
-        df_all['Cust_CompositeKey'] = normalize_key(df_all['CustomerCode_norm']) + '|' + '30010185'
+            validate_mapping_columns(
+                customer_mapping,
+                customer_required_columns,
+                "Customer Mapping"
+            )
 
-        df_all = df_all.merge(
-            df_customer_mapping[['CompositeKey', 'ASI_CRM_JDE_Cust_No_Formula__c']],
-            left_on='Cust_CompositeKey',
-            right_on='CompositeKey',
-            how='left'
-        )
+            customer_mapping["MappingGroup"] = normalize_series(
+                customer_mapping[
+                    "ASI_CRM_Mapping_Cust_No__c"
+                ]
+            )
 
-        df_all["CustomerCode"] = df_all["ASI_CRM_JDE_Cust_No_Formula__c"].fillna("")
-        df_all.drop(columns=['Cust_CompositeKey', 'CompositeKey', 'ASI_CRM_JDE_Cust_No_Formula__c'], inplace=True)
+            customer_mapping[
+                "ExternalCustomerCode"
+            ] = normalize_series(
+                customer_mapping[
+                    "ASI_CRM_Offtake_Customer_No__c"
+                ]
+            )
 
-        # SKU mapping
-        df_sku_mapping = sku_map[normalize_key(sku_map["ASI_CRM_Mapping_Cust_Code__c"]) == "30010185"].copy()
-        df_sku_mapping['CompositeKey'] = normalize_key(df_sku_mapping['ASI_CRM_Offtake_Product__c']) + '|' + normalize_key(df_sku_mapping['ASI_CRM_Mapping_Cust_Code__c'])
-        df_sku_mapping = df_sku_mapping.drop_duplicates(subset=['CompositeKey'])
+            customer_mapping[
+                "MappedCustomerCode"
+            ] = normalize_series(
+                customer_mapping[
+                    "ASI_CRM_JDE_Cust_No_Formula__c"
+                ]
+            )
 
-        df_all["ProductCode_norm"] = df_all["ProductCode"].map(norm_sku)
-        df_all['Prod_CompositeKey'] = normalize_key(df_all['ProductCode_norm']) + '|' + '30010185'
+            customer_mapping = customer_mapping[
+                customer_mapping["MappingGroup"] == GROUP_CODE
+            ].copy()
 
-        df_all = df_all.merge(
-            df_sku_mapping[['CompositeKey', 'ASI_CRM_SKU_Code__c']],
-            left_on='Prod_CompositeKey',
-            right_on='CompositeKey',
-            how='left'
-        )
+            customer_mapping["CompositeKey"] = (
+                customer_mapping["ExternalCustomerCode"]
+                + "|"
+                + customer_mapping["MappingGroup"]
+            )
 
-        df_all["PRT_Product_Code"] = df_all["ASI_CRM_SKU_Code__c"].fillna("")
-        df_all.drop(columns=['Prod_CompositeKey', 'CompositeKey', 'ASI_CRM_SKU_Code__c'], inplace=True)
+            customer_mapping = (
+                customer_mapping
+                .drop_duplicates(
+                    subset=["CompositeKey"],
+                    keep="first"
+                )
+            )
 
-        # -------- 3) Assemble final + aggregate duplicates --------
-        final = pd.DataFrame({
-            "Type": "INV",
-            "Action": "U",
-            "GroupCode": "30010185",
-            "GroupName": "瑞星翰德(夜點)",
-            "CustomerCode": df_all["CustomerCode"],
-            "CustomerName": df_all["CustomerName"],
-            "Date": df_all["Date"],
-            "PRT_Product_Code": df_all["PRT_Product_Code"],
-            "ProductCode": df_all["ProductCode_norm"],
-            "ProductName": df_all["ProductName"],
-            "Quantity": df_all["Quantity"].astype(int),
-            "Sheet": df_all["Sheet"]
-        })
+            df_all["CustomerCode_norm"] = normalize_series(
+                df_all["CustomerCode_ext"]
+            )
 
-        final = final.groupby(
-            ["Type","Action","GroupCode","GroupName",
-             "CustomerCode","CustomerName","Date",
-             "PRT_Product_Code","ProductCode","ProductName","Sheet"],
-            as_index=False
-        )["Quantity"].sum().sort_values(["Sheet","ProductCode","CustomerName"]).reset_index(drop=True)
+            df_all["CustomerCompositeKey"] = (
+                df_all["CustomerCode_norm"]
+                + "|"
+                + GROUP_CODE
+            )
 
-        # -------- UI --------
-        st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+            df_all = df_all.merge(
+                customer_mapping[
+                    [
+                        "CompositeKey",
+                        "MappedCustomerCode"
+                    ]
+                ],
+                left_on="CustomerCompositeKey",
+                right_on="CompositeKey",
+                how="left",
+                validate="many_to_one"
+            )
 
-        with st.expander("🔎 Parse & Mapping Summary"):
-            unmapped_cust = int((final["CustomerCode"] == "").sum())
-            unmapped_sku  = int((final["PRT_Product_Code"] == "").sum())
-            st.code("\n".join(parse_log))
-            st.write(f"Total rows: {len(final)} | Unmapped customers: {unmapped_cust} | Unmapped SKUs: {unmapped_sku}")
+            df_all["CustomerCode"] = (
+                df_all["MappedCustomerCode"]
+                .fillna("")
+            )
 
-        # -------- Download (no headers, no index; exclude 'Sheet' like usual) --------
-        export_cols = ["Type","Action","GroupCode","GroupName",
-                       "CustomerCode","CustomerName","Date",
-                       "PRT_Product_Code","ProductCode","ProductName","Quantity"]
-        out_name = "30010185_瑞星翰德_夜點_transformation.xlsx"
-        final[export_cols].to_excel(out_name, index=False, header=False)
-        with open(out_name, "rb") as f:
-            st.download_button("📥 Download Processed File", f, file_name=out_name)
+            df_all.drop(
+                columns=[
+                    "CustomerCompositeKey",
+                    "CompositeKey",
+                    "MappedCustomerCode"
+                ],
+                inplace=True
+            )
+
+            # ====================================================
+            # 5) SKU Mapping
+            # ====================================================
+
+            sku_mapping = pd.read_excel(
+                mapping_excel,
+                sheet_name="SKU Mapping",
+                dtype=str
+            )
+
+            sku_required_columns = [
+                "ASI_CRM_Mapping_Cust_Code__c",
+                "ASI_CRM_Offtake_Product__c",
+                "ASI_CRM_SKU_Code__c"
+            ]
+
+            validate_mapping_columns(
+                sku_mapping,
+                sku_required_columns,
+                "SKU Mapping"
+            )
+
+            sku_mapping["MappingGroup"] = normalize_series(
+                sku_mapping[
+                    "ASI_CRM_Mapping_Cust_Code__c"
+                ]
+            )
+
+            sku_mapping[
+                "ExternalProductCode"
+            ] = normalize_series(
+                sku_mapping[
+                    "ASI_CRM_Offtake_Product__c"
+                ]
+            )
+
+            sku_mapping[
+                "MappedProductCode"
+            ] = normalize_series(
+                sku_mapping[
+                    "ASI_CRM_SKU_Code__c"
+                ]
+            )
+
+            sku_mapping = sku_mapping[
+                sku_mapping["MappingGroup"] == GROUP_CODE
+            ].copy()
+
+            sku_mapping["CompositeKey"] = (
+                sku_mapping["ExternalProductCode"]
+                + "|"
+                + sku_mapping["MappingGroup"]
+            )
+
+            sku_mapping = (
+                sku_mapping
+                .drop_duplicates(
+                    subset=["CompositeKey"],
+                    keep="first"
+                )
+            )
+
+            df_all["ProductCode_norm"] = normalize_series(
+                df_all["ProductCode"]
+            )
+
+            df_all["ProductCompositeKey"] = (
+                df_all["ProductCode_norm"]
+                + "|"
+                + GROUP_CODE
+            )
+
+            df_all = df_all.merge(
+                sku_mapping[
+                    [
+                        "CompositeKey",
+                        "MappedProductCode"
+                    ]
+                ],
+                left_on="ProductCompositeKey",
+                right_on="CompositeKey",
+                how="left",
+                validate="many_to_one"
+            )
+
+            df_all["PRT_Product_Code"] = (
+                df_all["MappedProductCode"]
+                .fillna("")
+            )
+
+            df_all.drop(
+                columns=[
+                    "ProductCompositeKey",
+                    "CompositeKey",
+                    "MappedProductCode"
+                ],
+                inplace=True
+            )
+
+            # ====================================================
+            # 6) Assemble Final Output
+            # ====================================================
+
+            final = pd.DataFrame({
+                "Type": "INV",
+                "Action": "U",
+                "GroupCode": GROUP_CODE,
+                "GroupName": GROUP_NAME,
+                "CustomerCode": df_all["CustomerCode"],
+                "CustomerName": df_all["CustomerName"],
+                "Date": df_all["Date"],
+                "PRT_Product_Code": df_all[
+                    "PRT_Product_Code"
+                ],
+                "ProductCode": df_all["ProductCode_norm"],
+                "ProductName": df_all["ProductName"],
+                "Quantity": df_all["Quantity"],
+                "Sheet": df_all["Sheet"],
+                "OriginalCustomerCode": df_all[
+                    "CustomerCode_ext"
+                ]
+            })
+
+            # ====================================================
+            # 7) Aggregate Duplicate Rows
+            # ====================================================
+
+            grouping_columns = [
+                "Type",
+                "Action",
+                "GroupCode",
+                "GroupName",
+                "CustomerCode",
+                "CustomerName",
+                "Date",
+                "PRT_Product_Code",
+                "ProductCode",
+                "ProductName",
+                "Sheet",
+                "OriginalCustomerCode"
+            ]
+
+            final = (
+                final
+                .groupby(
+                    grouping_columns,
+                    as_index=False,
+                    dropna=False
+                )["Quantity"]
+                .sum()
+                .sort_values(
+                    [
+                        "Sheet",
+                        "ProductCode",
+                        "CustomerName"
+                    ]
+                )
+                .reset_index(drop=True)
+            )
+
+            # Convert Quantity to integer if all values are whole numbers
+            if (final["Quantity"] % 1 == 0).all():
+                final["Quantity"] = (
+                    final["Quantity"].astype(int)
+                )
+
+            # ====================================================
+            # 8) Check Unmapped Data
+            # ====================================================
+
+            unmapped_customers = final[
+                final["CustomerCode"] == ""
+            ].copy()
+
+            unmapped_skus = final[
+                final["PRT_Product_Code"] == ""
+            ].copy()
+
+            # ====================================================
+            # 9) Streamlit Preview
+            # ====================================================
+
+            st.success(
+                f"Processing completed: "
+                f"{len(final)} output rows"
+            )
+
+            st.write("✅ Processed Data Preview")
+
+            st.dataframe(
+                final.head(20),
+                use_container_width=True
+            )
+
+            with st.expander(
+                "🔎 Parse & Mapping Summary",
+                expanded=True
+            ):
+                st.code("\n".join(parse_log))
+
+                st.write(
+                    f"Total output rows: {len(final)}"
+                )
+
+                st.write(
+                    f"Unmapped customer rows: "
+                    f"{len(unmapped_customers)}"
+                )
+
+                st.write(
+                    f"Unmapped SKU rows: "
+                    f"{len(unmapped_skus)}"
+                )
+
+                if not unmapped_customers.empty:
+
+                    st.warning(
+                        "The following customer codes "
+                        "were not mapped:"
+                    )
+
+                    st.dataframe(
+                        unmapped_customers[
+                            [
+                                "OriginalCustomerCode",
+                                "CustomerName",
+                                "Sheet"
+                            ]
+                        ].drop_duplicates(),
+                        use_container_width=True
+                    )
+
+                if not unmapped_skus.empty:
+
+                    st.warning(
+                        "The following product codes "
+                        "were not mapped:"
+                    )
+
+                    st.dataframe(
+                        unmapped_skus[
+                            [
+                                "ProductCode",
+                                "ProductName",
+                                "Sheet"
+                            ]
+                        ].drop_duplicates(),
+                        use_container_width=True
+                    )
+
+            # ====================================================
+            # 10) Export Excel
+            # ====================================================
+
+            export_columns = [
+                "Type",
+                "Action",
+                "GroupCode",
+                "GroupName",
+                "CustomerCode",
+                "CustomerName",
+                "Date",
+                "PRT_Product_Code",
+                "ProductCode",
+                "ProductName",
+                "Quantity"
+            ]
+
+            output_buffer = io.BytesIO()
+
+            with pd.ExcelWriter(
+                output_buffer,
+                engine="openpyxl"
+            ) as writer:
+
+                final[export_columns].to_excel(
+                    writer,
+                    index=False,
+                    header=False,
+                    sheet_name="Output"
+                )
+
+            output_buffer.seek(0)
+
+            output_name = (
+                "30010185_瑞星翰德_夜點_transformation.xlsx"
+            )
+
+            st.download_button(
+                label="📥 Download Processed File",
+                data=output_buffer.getvalue(),
+                file_name=output_name,
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                key="ruixing_night_download"
+            )
+
+        # ========================================================
+        # 11) Error Handling
+        # ========================================================
+
+        except ImportError as error:
+
+            st.error(
+                "Excel engine is missing.\n\n"
+                "Please install the required packages:\n"
+                "pip install pandas openpyxl xlrd\n\n"
+                f"Technical detail: {error}"
+            )
+
+        except ValueError as error:
+
+            st.error(
+                f"File structure or mapping error: {error}"
+            )
+
+        except Exception as error:
+
+            st.exception(error)
 
 elif transformation_choice == "30010316 大倉捷":
     import re
