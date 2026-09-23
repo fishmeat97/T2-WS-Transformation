@@ -103,6 +103,153 @@ def protect_unmapped_values(df: pd.DataFrame) -> pd.DataFrame:
 
     return protected
 
+
+def show_mapping_preview(df: pd.DataFrame, max_rows=None) -> None:
+    """Display a transformation preview with consistent mapping diagnostics."""
+    if not isinstance(df, pd.DataFrame):
+        st.dataframe(df, use_container_width=True)
+        return
+
+    preview = df.copy()
+    customer_candidates = [
+        "CustomerCode", "Customer Code", "PRT Customer Code"
+    ]
+    sku_candidates = [
+        "PRT_Product_Code", "PRT Product Code", "SKU Code"
+    ]
+    customer_column = next(
+        (column for column in customer_candidates if column in preview.columns),
+        None,
+    )
+    sku_column = next(
+        (column for column in sku_candidates if column in preview.columns),
+        None,
+    )
+
+    # Some legacy branches have no standard mapping columns. Preserve their
+    # original preview rather than guessing by column position.
+    if customer_column is None or sku_column is None:
+        display_df = preview.head(max_rows) if max_rows else preview
+        st.dataframe(display_df, use_container_width=True)
+        st.caption(
+            "Mapping status is unavailable because this branch does not expose "
+            "standard customer and SKU mapping columns."
+        )
+        return
+
+    def missing_mapping(series: pd.Series) -> pd.Series:
+        cleaned = series.fillna("").astype(str).str.strip().str.lower()
+        return cleaned.isin(["", "nan", "none", "<na>", "nat"])
+
+    customer_unmapped = missing_mapping(preview[customer_column])
+    sku_unmapped = missing_mapping(preview[sku_column])
+    both_unmapped = customer_unmapped & sku_unmapped
+
+    preview["CustomerMappingStatus"] = customer_unmapped.map(
+        {True: "Unmapped", False: "Mapped"}
+    )
+    preview["SKUMappingStatus"] = sku_unmapped.map(
+        {True: "Unmapped", False: "Mapped"}
+    )
+    preview["OverallMappingStatus"] = "Fully Mapped"
+    preview.loc[
+        customer_unmapped & ~sku_unmapped, "OverallMappingStatus"
+    ] = "Customer Unmapped"
+    preview.loc[
+        ~customer_unmapped & sku_unmapped, "OverallMappingStatus"
+    ] = "SKU Unmapped"
+    preview.loc[
+        both_unmapped, "OverallMappingStatus"
+    ] = "Customer and SKU Unmapped"
+
+    display_df = preview.head(max_rows) if max_rows else preview
+    st.dataframe(display_df, use_container_width=True)
+
+    metric1, metric2, metric3, metric4 = st.columns(4)
+    metric1.metric("Total Rows", len(preview))
+    metric2.metric("Unmapped Customers", int(customer_unmapped.sum()))
+    metric3.metric("Unmapped SKUs", int(sku_unmapped.sum()))
+    metric4.metric("Both Unmapped", int(both_unmapped.sum()))
+
+    name_candidates = [
+        "CustomerName", "Customer Name", "Outlet Name"
+    ]
+    raw_customer_candidates = [
+        "OriginalCustomerCode", "CustomerCode_ext", "Outlet Code"
+    ]
+    product_candidates = [
+        "ProductCode", "Product Code"
+    ]
+    product_name_candidates = [
+        "ProductName", "Product Name"
+    ]
+    context_candidates = ["Date", "Month", "Sheet", "Quantity", "Number of Bottles"]
+
+    def existing_columns(candidates):
+        return [column for column in candidates if column in preview.columns]
+
+    customer_detail_columns = list(dict.fromkeys(
+        existing_columns(raw_customer_candidates)
+        + [customer_column]
+        + existing_columns(name_candidates)
+        + existing_columns(context_candidates)
+    ))
+    sku_detail_columns = list(dict.fromkeys(
+        [sku_column]
+        + existing_columns(product_candidates)
+        + existing_columns(product_name_candidates)
+        + existing_columns(context_candidates)
+    ))
+    both_detail_columns = list(dict.fromkeys(
+        existing_columns(raw_customer_candidates)
+        + [customer_column]
+        + existing_columns(name_candidates)
+        + [sku_column]
+        + existing_columns(product_candidates)
+        + existing_columns(product_name_candidates)
+        + existing_columns(context_candidates)
+    ))
+
+    with st.expander(
+        "⚠️ Unmapped Customer Details",
+        expanded=bool(customer_unmapped.any()),
+    ):
+        details = preview.loc[
+            customer_unmapped, customer_detail_columns
+        ].drop_duplicates().reset_index(drop=True)
+        if details.empty:
+            st.success("All customers are mapped.")
+        else:
+            st.dataframe(details, use_container_width=True)
+
+    with st.expander(
+        "⚠️ Unmapped SKU Details",
+        expanded=bool(sku_unmapped.any()),
+    ):
+        details = preview.loc[
+            sku_unmapped, sku_detail_columns
+        ].drop_duplicates().reset_index(drop=True)
+        if details.empty:
+            st.success("All SKUs are mapped.")
+        else:
+            st.dataframe(details, use_container_width=True)
+
+    with st.expander(
+        "🚨 Customer and SKU Both Unmapped",
+        expanded=bool(both_unmapped.any()),
+    ):
+        details = preview.loc[
+            both_unmapped, both_detail_columns
+        ].reset_index(drop=True)
+        if details.empty:
+            st.success("No rows have both customer and SKU unmapped.")
+        else:
+            st.warning(
+                f"{len(details)} rows have both mappings missing. "
+                "These rows remain in the processed output."
+            )
+            st.dataframe(details, use_container_width=True)
+
 # 20260422 Wayne Wang: Updated mapping logic across all customer branches to use composite keys
 # [Customer/Product Code]|[Customer Group Code] instead of drop_duplicates to prevent unmapped records
 # Added customer group filtering to ensure only relevant mappings are used per branch
@@ -267,7 +414,7 @@ if transformation_choice == "30010085 宏酒樽 (夜)":
 
             # Preview data in Streamlit
             st.write("✅ Processed Data Preview:")
-            st.dataframe(df_transformed)
+            show_mapping_preview(df_transformed)
             
             # Export without headers
             output_filename = "30010085 transformation.xlsx"
@@ -367,7 +514,7 @@ elif transformation_choice == "30010203 宏酒樽 (日)":
 
             # Preview data in Streamlit
             st.write("✅ Processed Data Preview:")
-            st.dataframe(df_transformed)
+            show_mapping_preview(df_transformed)
             
             # Export without headers
             output_filename = "30010203 transformation.xlsx"
@@ -469,7 +616,7 @@ elif transformation_choice == "30010061 向日葵":
 
         # Preview data in Streamlit
         st.write("✅ Processed Data Preview:")
-        st.dataframe(result_df)
+        show_mapping_preview(result_df)
 
         output_filename = "30010061 transformation.xlsx"
         result_df.to_excel(output_filename, index=False, header=False)
@@ -569,7 +716,7 @@ elif transformation_choice == "30010010 酒倉盛豐行":
         df_cleaned.insert(3, "Column4", "酒倉 ON")
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_cleaned)
+        show_mapping_preview(df_cleaned)
 
         output_filename = "30010010 transformation.xlsx"
         df_cleaned.to_excel(output_filename, index=False, header=False)
@@ -674,7 +821,7 @@ elif transformation_choice == "30010013 酒田":
         df_cleaned.insert(3, "Column4", "酒田 ON")
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_cleaned)
+        show_mapping_preview(df_cleaned)
 
         output_filename = "30010013 transformation.xlsx"
         df_cleaned.to_excel(output_filename, index=False, header=False)
@@ -837,7 +984,7 @@ elif transformation_choice == "30010059 誠邦有限公司":
         df_final["Customer Code"] = clean_code(df_final["Customer Code"]).astype("string")
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "processed_30010059.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -964,7 +1111,7 @@ elif transformation_choice == "30010315 圳程":
         df_transformed = df_transformed[column_order]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_transformed)
+        show_mapping_preview(df_transformed)
 
         output_filename = "30010315_transformation.xlsx"
         df_transformed.to_excel(output_filename, index=False, header=False)
@@ -1126,7 +1273,7 @@ elif transformation_choice == "30030088 九久":
         df_transformed = df_transformed[column_order]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_transformed)
+        show_mapping_preview(df_transformed)
 
         output_filename = "30030088_transformation.xlsx"
         df_transformed.to_excel(output_filename, index=False, header=False)
@@ -1248,7 +1395,7 @@ elif transformation_choice == "30020145 鏵錡":
 
         # Preview result
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_combined)
+        show_mapping_preview(df_combined)
 
         output_filename = "30020145_transformation.xlsx"
         df_combined.to_excel(output_filename, index=False, header=False)
@@ -1390,7 +1537,7 @@ elif transformation_choice == "30010199 振泰 OFF":
         ]]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df)
+        show_mapping_preview(df)
 
         # Export to Excel (remove first row, no headers)
         output_filename = "30010199_transformation.xlsx"
@@ -1538,7 +1685,7 @@ elif transformation_choice == "30010176 振泰 ON":
         ]]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df)
+        show_mapping_preview(df)
 
         # Export to Excel (remove first row, no headers)
         output_filename = "30010176_transformation.xlsx"
@@ -1661,7 +1808,7 @@ elif transformation_choice == "30030094 和易 ON":
         depletion_df["Date"] = depletion_df["Date"].apply(convert_minguo_date)
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(depletion_df)
+        show_mapping_preview(depletion_df)
 
         output_filename = "30030094_transformation.xlsx"
         depletion_df.to_excel(output_filename, index=False, header=False)
@@ -1777,7 +1924,7 @@ elif transformation_choice == "33001422 和易 OFF":
         df_extracted.drop(columns=['Prod_CompositeKey', "ASI_CRM_SKU_Code__c"], inplace=True)
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_extracted)
+        show_mapping_preview(df_extracted)
 
         output_filename = "33001422_transformation.xlsx"
         df_extracted.to_excel(output_filename, index=False, header=False)
@@ -1920,7 +2067,7 @@ elif transformation_choice == "30010017 正興(振興)":
         ]]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         # Export: no headers, no index
         output_filename = "30010017 transformation.xlsx"
@@ -2050,7 +2197,7 @@ elif transformation_choice == "30010031 廣茂隆(八條)":
 
         # ---- Preview + Export (NO headers, NO index) ----
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "30010031 transformation.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -2207,7 +2354,7 @@ elif transformation_choice == "30020016 日嵩":
 
         # ---------- 8) Preview & export (no headers / no index) ----------
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "30020016 transformation.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -2326,7 +2473,7 @@ elif transformation_choice == "30020027 榮好(實儀)":
 
         # 10) Preview + Export (NO headers / NO index)
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "30020027 transformation.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -2484,7 +2631,7 @@ elif transformation_choice == "30020180 暐倫 OFF":
 
         # ---------- 9) Preview & export (no headers / no index) ----------
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "30020180 transformation.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -2683,21 +2830,122 @@ elif transformation_choice == "30020203 玄星 OFF":
         else:
             df_view = df_all_final.copy()
 
-        # Drop helper Month column from display/export
-        df_view = df_view[[
+        # ---------------------------
+        # 7) Mapping status preview
+        # ---------------------------
+        customer_unmapped_mask = (
+            df_view["CustomerCode"].fillna("").astype(str).str.strip().eq("")
+        )
+        sku_unmapped_mask = (
+            df_view["PRT_Product_Code"].fillna("").astype(str).str.strip().eq("")
+        )
+
+        df_view["CustomerMappingStatus"] = customer_unmapped_mask.map(
+            {True: "Unmapped", False: "Mapped"}
+        )
+        df_view["SKUMappingStatus"] = sku_unmapped_mask.map(
+            {True: "Unmapped", False: "Mapped"}
+        )
+        df_view["OverallMappingStatus"] = "Fully Mapped"
+        df_view.loc[
+            customer_unmapped_mask & ~sku_unmapped_mask,
+            "OverallMappingStatus",
+        ] = "Customer Unmapped"
+        df_view.loc[
+            ~customer_unmapped_mask & sku_unmapped_mask,
+            "OverallMappingStatus",
+        ] = "SKU Unmapped"
+        df_view.loc[
+            customer_unmapped_mask & sku_unmapped_mask,
+            "OverallMappingStatus",
+        ] = "Customer and SKU Unmapped"
+
+        both_unmapped_mask = customer_unmapped_mask & sku_unmapped_mask
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        metric_col1.metric("Total Rows", len(df_view))
+        metric_col2.metric("Unmapped Customers", int(customer_unmapped_mask.sum()))
+        metric_col3.metric("Unmapped SKUs", int(sku_unmapped_mask.sum()))
+        metric_col4.metric("Both Unmapped", int(both_unmapped_mask.sum()))
+
+        display_columns = [
+            "Type","Action","GroupCode","GroupName",
+            "CustomerCode","CustomerName","Date",
+            "PRT_Product_Code","ProductCode","ProductName","Quantity",
+            "CustomerMappingStatus","SKUMappingStatus","OverallMappingStatus"
+        ]
+
+        st.write("✅ Processed Data Preview with Mapping Status:")
+        st.dataframe(df_view[display_columns], use_container_width=True)
+
+        with st.expander(
+            "⚠️ Unmapped Customer Details",
+            expanded=bool(customer_unmapped_mask.any()),
+        ):
+            unmapped_customer_view = (
+                df_view.loc[
+                    customer_unmapped_mask,
+                    ["CustomerName", "CustomerCode", "Date", "Month"],
+                ]
+                .drop_duplicates()
+                .sort_values(["CustomerName", "Date"])
+                .reset_index(drop=True)
+            )
+            if unmapped_customer_view.empty:
+                st.success("All customers are mapped for the selected month.")
+            else:
+                st.dataframe(unmapped_customer_view, use_container_width=True)
+
+        with st.expander(
+            "⚠️ Unmapped SKU Details",
+            expanded=bool(sku_unmapped_mask.any()),
+        ):
+            unmapped_sku_view = (
+                df_view.loc[
+                    sku_unmapped_mask,
+                    ["ProductCode", "ProductName", "PRT_Product_Code", "Date", "Month"],
+                ]
+                .drop_duplicates()
+                .sort_values(["ProductCode", "Date"])
+                .reset_index(drop=True)
+            )
+            if unmapped_sku_view.empty:
+                st.success("All SKUs are mapped for the selected month.")
+            else:
+                st.dataframe(unmapped_sku_view, use_container_width=True)
+
+        with st.expander(
+            "🚨 Customer and SKU Both Unmapped",
+            expanded=bool(both_unmapped_mask.any()),
+        ):
+            both_unmapped_view = df_view.loc[
+                both_unmapped_mask,
+                [
+                    "CustomerName", "ProductCode", "ProductName",
+                    "Quantity", "Date", "Month",
+                ],
+            ].reset_index(drop=True)
+            if both_unmapped_view.empty:
+                st.success("No rows have both customer and SKU unmapped.")
+            else:
+                st.warning(
+                    f"{len(both_unmapped_view)} rows have both mappings missing. "
+                    "These rows are retained in the export."
+                )
+                st.dataframe(both_unmapped_view, use_container_width=True)
+
+        # Export remains in the original 11-column format.
+        export_columns = [
             "Type","Action","GroupCode","GroupName",
             "CustomerCode","CustomerName","Date",
             "PRT_Product_Code","ProductCode","ProductName","Quantity"
-        ]]
-
-        st.write("✅ Processed Data Preview:")
-        st.dataframe(df_view)
+        ]
+        df_export = df_view[export_columns].copy()
 
         # ---------------------------
-        # 7) Export selection (no headers / no index)
+        # 8) Export selection (no headers / no index)
         # ---------------------------
         out_name = "30020203_玄星OFF_all_months.xlsx" if month_filter == "All" else f"30020203_玄星OFF_{month_filter}.xlsx"
-        df_view.to_excel(out_name, index=False, header=False)
+        df_export.to_excel(out_name, index=False, header=False)
         with open(out_name, "rb") as f:
             st.download_button(label="📥 Download Selected Month", data=f, file_name=out_name)
 
@@ -2887,7 +3135,7 @@ elif transformation_choice == "30020216 久悅貿易":
 
         # ---------- 9) Preview + Export (no headers / no index) ----------
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_export)
+        show_mapping_preview(df_export)
 
         output_filename = "30020216 transformation.xlsx"
         df_export.to_excel(output_filename, index=False, header=False)
@@ -3072,7 +3320,7 @@ elif transformation_choice == "30030061 合歡 OFF":
         # 5) Preview & Export (no headers / no index)
         # ---------------------------
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_final)
+        show_mapping_preview(df_final)
 
         output_filename = "30030061 transformation.xlsx"
         df_final.to_excel(output_filename, index=False, header=False)
@@ -3256,7 +3504,7 @@ elif transformation_choice == "30030076 裕陞（分月）":
         ]]
 
         st.write("✅ Processed Data Preview:")
-        st.dataframe(df_view)
+        show_mapping_preview(df_view)
 
         # Filename
         if not selected_months or len(selected_months) == len(months):
@@ -3536,7 +3784,7 @@ elif transformation_choice == "30010008 利多吉":
 
         # ---- UI
         st.write("✅ Processed Data Preview:")
-        st.dataframe(final.head(30))
+        show_mapping_preview(final, max_rows=30)
 
         with st.expander("🔎 Parse summary (per sheet)"):
             st.code("\n".join(parse_log))
@@ -3736,7 +3984,7 @@ elif transformation_choice == "30010154 亨玖":
 
         # -------- UI --------
         st.write("✅ Processed Data Preview (first 25 rows):")
-        st.dataframe(final_fixed.head(25))
+        show_mapping_preview(final_fixed, max_rows=25)
 
         with st.expander("🔎 Parse summary (per sheet)"):
             st.code("\n".join(parse_log))
@@ -5414,7 +5662,7 @@ elif transformation_choice == "30010316 大倉捷":
 
         # -------- UI --------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["CustomerCode"] == "").sum())
@@ -5630,7 +5878,7 @@ elif transformation_choice == "30020076 酒國英豪":
 
         # -------- UI --------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["CustomerCode"] == "").sum())
@@ -5852,7 +6100,7 @@ elif transformation_choice == "30030021 合歡 ON":
 
         # ---------------- UI ----------------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["CustomerCode"] == "").sum())
@@ -6078,7 +6326,7 @@ elif transformation_choice == "30030083 東瀛":
 
         # ---------------- UI ----------------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["CustomerCode"] == "").sum())
@@ -6322,7 +6570,7 @@ elif transformation_choice == "30030084 華恩":
 
         # ---------------- UI ----------------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["Customer Code"] == "").sum())
@@ -6502,7 +6750,7 @@ elif transformation_choice == "30030106 明輝":
 
         # ---------------- UI ----------------
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         with st.expander("🔎 Parse & Mapping Summary"):
             unmapped_cust = int((final["Customer Code"] == "").sum())
@@ -6720,7 +6968,7 @@ elif transformation_choice == "30010225 連大立":
         ).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         export_cols = ["Type","Action","GroupCode","GroupName",
                        "Customer Code","Customer Name","Date",
@@ -6890,7 +7138,7 @@ elif transformation_choice == "30020023 松勇ON":
         ).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         out_name = "30020023_松勇ON_transformation.xlsx"
         export_cols = ["Type","Action","GroupCode","GroupName",
@@ -7077,7 +7325,7 @@ elif transformation_choice == "30020177 富為MM(甲揚)":
         ).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         out_name = "30020177_富為MM(甲揚)_transformation.xlsx"
         export_cols = ["Type","Action","GroupCode","GroupName",
@@ -7267,7 +7515,7 @@ elif transformation_choice == "30030010 信禕":
         ).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         export_cols = ["Type","Action","GroupCode","GroupName",
                        "Customer Code","Customer Name","Date",
@@ -7448,7 +7696,7 @@ elif transformation_choice == "30030105 上景":
         )["Number of Bottles"].sum().sort_values(["Date","Product Code","Customer Name"]).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
-        st.dataframe(final.head(20))
+        show_mapping_preview(final, max_rows=20)
 
         export_cols = ["Type","Action","GroupCode","GroupName",
                        "Customer Code","Customer Name","Date",
