@@ -16,6 +16,93 @@ def normalize_key(series: pd.Series) -> pd.Series:
          .str.upper()
     )
 
+
+def safe_groupby_sum(df: pd.DataFrame, group_keys, value_column: str) -> pd.DataFrame:
+    """Aggregate quantities without dropping rows that have no mapping result."""
+    protected = protect_unmapped_values(df)
+
+    missing = [c for c in [*group_keys, value_column] if c not in protected.columns]
+    if missing:
+        raise ValueError(
+            "Safe aggregation is missing required columns: " + ", ".join(missing)
+        )
+
+    # pandas groupby normally drops groups containing NaN. Mapping-result and
+    # descriptive columns are converted to blank strings so customer/SKU rows
+    # remain visible even when both mappings fail.
+    for column in group_keys:
+        if (
+            pd.api.types.is_object_dtype(protected[column])
+            or pd.api.types.is_string_dtype(protected[column])
+        ):
+            protected[column] = protected[column].fillna("").astype(str).str.strip()
+
+    protected[value_column] = pd.to_numeric(
+        protected[value_column], errors="coerce"
+    ).fillna(0)
+
+    return (
+        protected.groupby(group_keys, as_index=False, dropna=False)[value_column]
+        .sum()
+    )
+
+
+def safe_drop_duplicates(df: pd.DataFrame, subset) -> pd.DataFrame:
+    """De-duplicate rows while retaining distinct records with failed mappings."""
+    protected = protect_unmapped_values(df)
+    protected_keys = list(subset)
+
+    # Older branches used mapped CustomerCode in the duplicate key. When that
+    # value is blank/NaN, distinct customers could otherwise collapse. Add all
+    # available source/descriptive fallbacks to keep those records separate.
+    fallback_columns = [
+        "CustomerCode_ext",
+        "OriginalCustomerCode",
+        "Outlet Code",
+        "CustomerName",
+        "Customer Name",
+        "Outlet Name",
+        "PRT_Product_Code",
+        "PRT Product Code",
+        "ProductName",
+        "Product Name",
+    ]
+
+    for column in fallback_columns:
+        if column in protected.columns and column not in protected_keys:
+            protected_keys.append(column)
+
+    for column in protected_keys:
+        if (
+            pd.api.types.is_object_dtype(protected[column])
+            or pd.api.types.is_string_dtype(protected[column])
+        ):
+            protected[column] = protected[column].fillna("").astype(str).str.strip()
+
+    return protected.drop_duplicates(
+        subset=protected_keys,
+        keep="first",
+    ).reset_index(drop=True)
+
+
+def protect_unmapped_values(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardise missing mapping results as blanks before preview/export."""
+    protected = df.copy()
+    mapping_columns = [
+        "CustomerCode",
+        "Customer Code",
+        "PRT_Product_Code",
+        "PRT Product Code",
+    ]
+
+    for column in mapping_columns:
+        if column in protected.columns:
+            protected[column] = (
+                protected[column].fillna("").astype(str).str.strip()
+            )
+
+    return protected
+
 # 20260422 Wayne Wang: Updated mapping logic across all customer branches to use composite keys
 # [Customer/Product Code]|[Customer Group Code] instead of drop_duplicates to prevent unmapped records
 # Added customer group filtering to ensure only relevant mappings are used per branch
@@ -1823,7 +1910,7 @@ elif transformation_choice == "30010017 正興(振興)":
 
         # --- De-duplicate exact duplicates (keep first) ---
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_final = df_parsed.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_parsed, dedup_keys)
 
         # Final order (no headers / no index on export)
         df_final = df_final[[
@@ -1959,7 +2046,7 @@ elif transformation_choice == "30010031 廣茂隆(八條)":
 
         # ---- De-duplicate exact duplicates ----
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # ---- Preview + Export (NO headers, NO index) ----
         st.write("✅ Processed Data Preview:")
@@ -2116,7 +2203,7 @@ elif transformation_choice == "30020016 日嵩":
 
         # remove exact duplicates; this plus unique-only mapping prevents the “same row repeated 5 times” issue
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # ---------- 8) Preview & export (no headers / no index) ----------
         st.write("✅ Processed Data Preview:")
@@ -2235,7 +2322,7 @@ elif transformation_choice == "30020027 榮好(實儀)":
 
         # 9) De-duplicate exact duplicates
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # 10) Preview + Export (NO headers / NO index)
         st.write("✅ Processed Data Preview:")
@@ -2393,7 +2480,7 @@ elif transformation_choice == "30020180 暐倫 OFF":
 
         # ---------- 8) De-duplicate exact duplicates ----------
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # ---------- 9) Preview & export (no headers / no index) ----------
         st.write("✅ Processed Data Preview:")
@@ -2583,7 +2670,7 @@ elif transformation_choice == "30020203 玄星 OFF":
         })
 
         dedup_keys = ["GroupCode","CustomerCode","Date","ProductCode","Quantity"]
-        df_all_final = df_all_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_all_final = safe_drop_duplicates(df_all_final, dedup_keys)
 
         # ---------------------------
         # 6) UI: Toggle by Month (📅)
@@ -2793,7 +2880,7 @@ elif transformation_choice == "30020216 久悅貿易":
 
         # ---------- 8) De-dup: keep distinct lines (uses doc no + product name + custKey) ----------
         dedup_keys = ["GroupCode","_custKey","Date","ProductCode","ProductName","Quantity","DocumentNo"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # drop helper columns from export
         df_export = df_final.drop(columns=["DocumentNo","_custKey"])
@@ -2912,7 +2999,7 @@ elif transformation_choice == "30030061 合歡 OFF":
 
         # Combine sales + free within the same doc/customer/product/date
         group_keys = ["Date","DocumentNo","CustomerCode_ext","CustomerName","ProductCode","ProductName"]
-        df_txn = df_txn.groupby(group_keys, as_index=False)["Quantity"].sum()
+        df_txn = safe_groupby_sum(df_txn, group_keys, "Quantity")
 
         # ---------------------------
         # 3) Mappings (unique-only; prefer filtered to 30030061, then global)
@@ -2979,7 +3066,7 @@ elif transformation_choice == "30030061 合歡 OFF":
         })
 
         dedup_keys = ["DocumentNo","CustomerCode","Date","ProductCode","ProductName","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # ---------------------------
         # 5) Preview & Export (no headers / no index)
@@ -3088,7 +3175,7 @@ elif transformation_choice == "30030076 裕陞（分月）":
 
         # Combine duplicates within same doc/customer/product/date (e.g., sales + free lines)
         group_keys = ["Date","DocumentNo","CustomerCode_ext","CustomerName","ProductCode","ProductName"]
-        df_all = df_all.groupby(group_keys, as_index=False)["Quantity"].sum()
+        df_all = safe_groupby_sum(df_all, group_keys, "Quantity")
 
         # ---------- 2) Mappings (unique-only; prefer filtered to 30030076, then global) ----------
         cust_map = pd.read_excel(mapping_file, sheet_name="Customer Mapping", dtype=str)
@@ -3153,7 +3240,7 @@ elif transformation_choice == "30030076 裕陞（分月）":
 
         # De-dup (conservative: keep DocumentNo)
         dedup_keys = ["DocumentNo","CustomerCode","Date","ProductCode","ProductName","Quantity"]
-        df_final = df_final.drop_duplicates(subset=dedup_keys, keep="first").reset_index(drop=True)
+        df_final = safe_drop_duplicates(df_final, dedup_keys)
 
         # ---------- 4) Multi-month selector + export ----------
         months = sorted(df_final["Month"].dropna().astype(str).unique().tolist())
@@ -3385,7 +3472,7 @@ elif transformation_choice == "30010008 利多吉":
 
         # Combine duplicates within the same doc/customer/product/date
         group_keys = ["Date", "DocumentNo", "CustomerCode_ext", "CustomerName", "ProductCode", "ProductName"]
-        df_all = df_all.groupby(group_keys, as_index=False)["Quantity"].sum()
+        df_all = safe_groupby_sum(df_all, group_keys, "Quantity")
 
         # =============== 2) Mappings using Composite Keys ===============
         cust_map = pd.read_excel(mapping_file, sheet_name="Customer Mapping", dtype=str, engine=map_eng)
@@ -3638,11 +3725,13 @@ elif transformation_choice == "30010154 亨玖":
             "Quantity": df_all["Quantity"].astype(int),
         })
 
+        final_fixed = protect_unmapped_values(final_fixed)
         final_fixed = final_fixed.groupby(
             ["Type","Action","GroupCode","GroupName",
              "CustomerCode","CustomerName","Date",
              "PRT_Product_Code","ProductCode","ProductName"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Quantity"].sum()
 
         # -------- UI --------
@@ -5314,11 +5403,13 @@ elif transformation_choice == "30010316 大倉捷":
             "Quantity": df_all["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "CustomerCode","CustomerName","Date",
              "PRT_Product_Code","ProductCode","ProductName"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Quantity"].sum().sort_values(["ProductCode","CustomerName"]).reset_index(drop=True)
 
         # -------- UI --------
@@ -5528,11 +5619,13 @@ elif transformation_choice == "30020076 酒國英豪":
             "Sheet": df_m["Sheet"]
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "CustomerCode","CustomerName","Date",
              "PRT_Product_Code","ProductCode","ProductName","DocNo","Sheet"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Quantity"].sum().sort_values(["Date","ProductCode","CustomerName","DocNo"]).reset_index(drop=True)
 
         # -------- UI --------
@@ -5748,11 +5841,13 @@ elif transformation_choice == "30030021 合歡 ON":
             "Quantity": df_m["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "CustomerCode","CustomerName","Date",
              "PRT_Product_Code","ProductCode","ProductName"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Quantity"].sum().sort_values(["Date","ProductCode","CustomerName"]).reset_index(drop=True)
 
         # ---------------- UI ----------------
@@ -5972,11 +6067,13 @@ elif transformation_choice == "30030083 東瀛":
             "Sheet": df_m["Sheet"]
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "CustomerCode","CustomerName","Date",
              "PRT_Product_Code","ProductCode","ProductName","DocNo","Sheet"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Quantity"].sum().sort_values(["Date","ProductCode","CustomerName","DocNo"]).reset_index(drop=True)
 
         # ---------------- UI ----------------
@@ -6214,11 +6311,13 @@ elif transformation_choice == "30030084 華恩":
             "Number of Bottles": df_m["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(["Date","Product Code","Customer Name"]).reset_index(drop=True)
 
         # ---------------- UI ----------------
@@ -6392,11 +6491,13 @@ elif transformation_choice == "30030106 明輝":
             "Number of Bottles": df_m["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(["Date","Product Code","Customer Name"]).reset_index(drop=True)
 
         # ---------------- UI ----------------
@@ -6607,11 +6708,13 @@ elif transformation_choice == "30010225 連大立":
             "Number of Bottles": df1["Quantity"].astype(int)
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(
             ["Date","Product Code","Customer Name"]
         ).reset_index(drop=True)
@@ -6775,11 +6878,13 @@ elif transformation_choice == "30020023 松勇ON":
             "Number of Bottles": df["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(
             ["Product Code","Customer Name"]
         ).reset_index(drop=True)
@@ -6960,11 +7065,13 @@ elif transformation_choice == "30020177 富為MM(甲揚)":
             "Number of Bottles": df["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(
             ["Date","Product Code","Customer Name"]
         ).reset_index(drop=True)
@@ -7148,11 +7255,13 @@ elif transformation_choice == "30030010 信禕":
             "Document Number": df_m["DocNo"]
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name","Document Number"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(
             ["Date","Product Code","Customer Name"]
         ).reset_index(drop=True)
@@ -7329,11 +7438,13 @@ elif transformation_choice == "30030105 上景":
             "Number of Bottles": df_m["Quantity"].astype(int),
         })
 
+        final = protect_unmapped_values(final)
         final = final.groupby(
             ["Type","Action","GroupCode","GroupName",
              "Customer Code","Customer Name","Date",
              "PRT Product Code","Product Code","Product Name"],
-            as_index=False
+            as_index=False,
+            dropna=False
         )["Number of Bottles"].sum().sort_values(["Date","Product Code","Customer Name"]).reset_index(drop=True)
 
         st.write("✅ Processed Data Preview (first 20 rows):")
