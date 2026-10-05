@@ -7656,7 +7656,7 @@ elif transformation_choice == "33010499 客尼亞客":
         current_dates = []
 
 
-        def save_current_product():
+ def save_current_product():
 
     if (
         current_product_code
