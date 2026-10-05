@@ -7658,51 +7658,42 @@ elif transformation_choice == "33010499 客尼亞客":
 
         def save_current_product():
 
-            nonlocal current_product_code
-            nonlocal current_product_name
-            nonlocal current_qty
-            nonlocal current_dates
+    if (
+        current_product_code
+        and current_qty != 0
+    ):
 
-            if (
-                current_product_code
-                and current_qty != 0
-            ):
+        valid_dates = [
+            d for d in current_dates
+            if d is not None
+        ]
 
-                # Use latest transaction date
-                valid_dates = [
-                    d for d in current_dates
-                    if d is not None
-                ]
+        final_date = (
+            max(valid_dates)
+            if valid_dates
+            else None
+        )
 
-                final_date = (
-                    max(valid_dates)
-                    if valid_dates
-                    else None
-                )
+        product_rows.append({
 
-                product_rows.append({
+            "Date":
+                final_date,
 
-                    "Date":
-                        final_date,
+            "Outlet Code":
+                "33010499",
 
-                    "Outlet Code":
-                        "33010499",
+            "Outlet Name":
+                "客尼亞客",
 
-                    # Always fixed
-                    "Outlet Name":
-                        "客尼亞客",
+            "Product Code":
+                current_product_code,
 
-                    "Product Code":
-                        current_product_code,
+            "Product Name":
+                current_product_name,
 
-                    "Product Name":
-                        current_product_name,
-
-                    # Sum all quantities under same product
-                    "Number of Bottles":
-                        current_qty
-                })
-
+            "Number of Bottles":
+                current_qty
+        })
 
         # ============================================================
         # 5) Scan Excel
