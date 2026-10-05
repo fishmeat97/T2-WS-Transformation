@@ -7524,7 +7524,7 @@ elif transformation_choice == "30030010 信禕":
         final[export_cols].to_excel(out_name, index=False, header=False)
         with open(out_name, "rb") as f:
             st.download_button("📥 Download Processed File", f, file_name=out_name)
-            
+
 elif transformation_choice == "33010499 客尼亞客":
 
     import io
@@ -7544,7 +7544,7 @@ elif transformation_choice == "33010499 客尼亞客":
     if raw_data_file is not None and mapping_file is not None:
 
         # ============================================================
-        # 1) Read Files
+        # 1) Read uploaded files
         # ============================================================
 
         raw_bytes = raw_data_file.getvalue()
@@ -7552,8 +7552,9 @@ elif transformation_choice == "33010499 客尼亞客":
 
         xls = pd.ExcelFile(io.BytesIO(raw_bytes))
 
+
         # ============================================================
-        # 2) Helper - Minguo Date
+        # 2) Helper: Minguo date -> YYYYMMDD
         # ============================================================
 
         def kenya_minguo_to_yyyymmdd(value):
@@ -7569,7 +7570,6 @@ elif transformation_choice == "33010499 客尼亞客":
             )
 
             if match:
-
                 year = int(match.group(1)) + 1911
                 month = int(match.group(2))
                 day = int(match.group(3))
@@ -7577,18 +7577,14 @@ elif transformation_choice == "33010499 客尼亞客":
                 return f"{year:04d}{month:02d}{day:02d}"
 
             try:
-
-                return pd.to_datetime(
-                    value
-                ).strftime("%Y%m%d")
+                return pd.to_datetime(value).strftime("%Y%m%d")
 
             except Exception:
-
                 return None
 
 
         # ============================================================
-        # 3) Find Target Sheet
+        # 3) Find target worksheet
         # ============================================================
 
         target_sheet = None
@@ -7605,12 +7601,13 @@ elif transformation_choice == "33010499 客尼亞客":
             if temp.empty:
                 continue
 
-            found_product = False
+            found_product_header = False
 
             for i in range(min(50, len(temp))):
 
                 row_text = " ".join(
                     temp.iloc[i]
+                    .fillna("")
                     .astype(str)
                     .tolist()
                 )
@@ -7619,11 +7616,10 @@ elif transformation_choice == "33010499 客尼亞客":
                     "貨品編號" in row_text
                     and "貨品名稱" in row_text
                 ):
-                    found_product = True
+                    found_product_header = True
                     break
 
-            if found_product:
-
+            if found_product_header:
                 target_sheet = sheet
                 df_raw = temp
                 break
@@ -7632,79 +7628,39 @@ elif transformation_choice == "33010499 客尼亞客":
         if target_sheet is None:
 
             st.error(
-                "❌ 找不到符合客尼亞客格式的 worksheet。"
+                "❌ 找不到符合客尼亞客格式的工作表。"
             )
 
             st.stop()
 
 
         st.success(
-            f"✅ Detected sheet: {target_sheet}"
+            f"✅ Detected worksheet: {target_sheet}"
         )
 
 
         # ============================================================
-        # 4) Extract Product Blocks
+        # 4) Extract product blocks
         # ============================================================
 
         product_rows = []
 
         current_product_code = None
         current_product_name = None
-
         current_qty = 0
         current_dates = []
 
 
- def save_current_product():
-
-    if (
-        current_product_code
-        and current_qty != 0
-    ):
-
-        valid_dates = [
-            d for d in current_dates
-            if d is not None
-        ]
-
-        final_date = (
-            max(valid_dates)
-            if valid_dates
-            else None
-        )
-
-        product_rows.append({
-
-            "Date":
-                final_date,
-
-            "Outlet Code":
-                "33010499",
-
-            "Outlet Name":
-                "客尼亞客",
-
-            "Product Code":
-                current_product_code,
-
-            "Product Name":
-                current_product_name,
-
-            "Number of Bottles":
-                current_qty
-        })
-
         # ============================================================
-        # 5) Scan Excel
+        # 5) Scan all rows
         # ============================================================
 
         for r in range(len(df_raw)):
 
-            row_values = df_raw.iloc[r]
+            row = df_raw.iloc[r]
 
             row_text = " ".join(
-                row_values
+                row
                 .fillna("")
                 .astype(str)
                 .tolist()
@@ -7712,7 +7668,7 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
             # --------------------------------------------------------
-            # New Product Block
+            # New product block
             # --------------------------------------------------------
 
             if (
@@ -7721,50 +7677,78 @@ elif transformation_choice == "33010499 客尼亞客":
             ):
 
                 # Save previous product first
-                save_current_product()
+                if (
+                    current_product_code is not None
+                    and current_qty != 0
+                ):
 
-                # Reset
+                    valid_dates = [
+                        d for d in current_dates
+                        if d is not None
+                    ]
+
+                    final_date = (
+                        max(valid_dates)
+                        if valid_dates
+                        else None
+                    )
+
+                    product_rows.append({
+                        "Date": final_date,
+                        "Outlet Code": "33010499",
+                        "Outlet Name": "客尼亞客",
+                        "Product Code": current_product_code,
+                        "Product Name": current_product_name,
+                        "Number of Bottles": current_qty
+                    })
+
+
+                # Reset new product
+                current_product_code = None
+                current_product_name = None
                 current_qty = 0
                 current_dates = []
 
 
-                product_code_match = re.search(
+                # Extract Product Code
+                code_match = re.search(
                     r"貨品編號\s*[:：]\s*([^\s]+)",
                     row_text
                 )
 
-                product_name_match = re.search(
+                if code_match:
+                    current_product_code = (
+                        code_match.group(1).strip()
+                    )
+
+
+                # Extract Product Name
+                name_match = re.search(
                     r"貨品名稱\s*[:：]\s*(.+)",
                     row_text
                 )
 
-
-                current_product_code = (
-                    product_code_match.group(1).strip()
-                    if product_code_match
-                    else None
-                )
-
-                current_product_name = (
-                    product_name_match.group(1).strip()
-                    if product_name_match
-                    else None
-                )
+                if name_match:
+                    current_product_name = (
+                        name_match.group(1).strip()
+                    )
 
                 continue
 
 
             # --------------------------------------------------------
-            # Transaction Rows
+            # Transaction row
             # --------------------------------------------------------
 
             first_cell = (
-                str(row_values.iloc[0]).strip()
-                if len(row_values) > 0
+                str(row.iloc[0]).strip()
+                if len(row) > 0
+                and not pd.isna(row.iloc[0])
                 else ""
             )
 
 
+            # Only accept transaction dates such as 115/09/01
             if not re.fullmatch(
                 r"\d{2,3}/\d{1,2}/\d{1,2}",
                 first_cell
@@ -7772,48 +7756,76 @@ elif transformation_choice == "33010499 客尼亞客":
                 continue
 
 
-            # Quantity column
+            # If no product currently active, skip
+            if current_product_code is None:
+                continue
+
+
+            # Quantity assumed in column E
             qty = (
-                row_values.iloc[4]
-                if len(row_values) > 4
+                row.iloc[4]
+                if len(row) > 4
                 else None
             )
-
 
             qty = pd.to_numeric(
                 qty,
                 errors="coerce"
             )
 
-
             if pd.isna(qty):
                 continue
 
 
-            # Add quantity into current product total
+            # Add quantity to current product total
             current_qty += qty
 
 
-            # Keep date
-            txn_date = (
+            # Keep transaction date
+            converted_date = (
                 kenya_minguo_to_yyyymmdd(
                     first_cell
                 )
             )
 
-            if txn_date:
-
+            if converted_date is not None:
                 current_dates.append(
-                    txn_date
+                    converted_date
                 )
 
 
-        # Save final product
-        save_current_product()
+        # ============================================================
+        # 6) Save final product block
+        # ============================================================
+
+        if (
+            current_product_code is not None
+            and current_qty != 0
+        ):
+
+            valid_dates = [
+                d for d in current_dates
+                if d is not None
+            ]
+
+            final_date = (
+                max(valid_dates)
+                if valid_dates
+                else None
+            )
+
+            product_rows.append({
+                "Date": final_date,
+                "Outlet Code": "33010499",
+                "Outlet Name": "客尼亞客",
+                "Product Code": current_product_code,
+                "Product Name": current_product_name,
+                "Number of Bottles": current_qty
+            })
 
 
         # ============================================================
-        # 6) Create Product-Level DataFrame
+        # 7) Create DataFrame
         # ============================================================
 
         df_transformed = pd.DataFrame(
@@ -7824,32 +7836,26 @@ elif transformation_choice == "33010499 客尼亞客":
         if df_transformed.empty:
 
             st.error(
-                "❌ 沒有抓到任何產品資料。"
+                "❌ 沒有抓到任何產品交易資料。"
             )
 
             st.stop()
 
 
         # ============================================================
-        # 7) Clean
+        # 8) Normalize product code
         # ============================================================
 
-        df_transformed[
-            "Product Code"
-        ] = normalize_key(
-            df_transformed[
-                "Product Code"
-            ]
+        df_transformed["Product Code"] = (
+            normalize_key(
+                df_transformed["Product Code"]
+            )
         )
 
 
-        df_transformed[
-            "Number of Bottles"
-        ] = (
+        df_transformed["Number of Bottles"] = (
             pd.to_numeric(
-                df_transformed[
-                    "Number of Bottles"
-                ],
+                df_transformed["Number of Bottles"],
                 errors="coerce"
             )
             .fillna(0)
@@ -7858,7 +7864,7 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         # ============================================================
-        # 8) Fixed Columns
+        # 9) Add fixed output columns
         # ============================================================
 
         df_transformed.insert(
@@ -7887,7 +7893,7 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         # ============================================================
-        # 9) Mapping File
+        # 10) Read Mapping File
         # ============================================================
 
         mapping_xls = pd.ExcelFile(
@@ -7895,27 +7901,20 @@ elif transformation_choice == "33010499 客尼亞客":
         )
 
         dfs_mapping = {
-
-            sheet:
-            pd.read_excel(
+            sheet: pd.read_excel(
                 io.BytesIO(mapping_bytes),
                 sheet_name=sheet
             )
-
-            for sheet in
-            mapping_xls.sheet_names
+            for sheet in mapping_xls.sheet_names
         }
 
 
         # ============================================================
-        # 10) SKU Mapping
+        # 11) SKU Mapping
         # ============================================================
 
         df_sku_mapping = (
-            dfs_mapping[
-                "SKU Mapping"
-            ]
-            .copy()
+            dfs_mapping["SKU Mapping"].copy()
         )
 
 
@@ -7935,13 +7934,11 @@ elif transformation_choice == "33010499 客尼亞客":
         df_sku_mapping[
             "Prod_CompositeKey"
         ] = (
-
             normalize_key(
                 df_sku_mapping[
                     "ASI_CRM_Offtake_Product__c"
                 ]
             )
-
             + "|33010499"
         )
 
@@ -7949,9 +7946,7 @@ elif transformation_choice == "33010499 客尼亞客":
         df_sku_mapping = (
             df_sku_mapping
             .drop_duplicates(
-                subset=[
-                    "Prod_CompositeKey"
-                ],
+                subset=["Prod_CompositeKey"],
                 keep="first"
             )
         )
@@ -7960,13 +7955,9 @@ elif transformation_choice == "33010499 客尼亞客":
         df_transformed[
             "Prod_CompositeKey"
         ] = (
-
             normalize_key(
-                df_transformed[
-                    "Product Code"
-                ]
+                df_transformed["Product Code"]
             )
-
             + "|33010499"
         )
 
@@ -7974,52 +7965,41 @@ elif transformation_choice == "33010499 客尼亞客":
         df_transformed = (
             df_transformed
             .merge(
-
                 df_sku_mapping[
                     [
                         "Prod_CompositeKey",
                         "ASI_CRM_SKU_Code__c"
                     ]
                 ],
-
                 on="Prod_CompositeKey",
-
                 how="left"
             )
         )
 
 
         df_transformed.rename(
-
             columns={
                 "ASI_CRM_SKU_Code__c":
                     "SKU Code"
             },
-
             inplace=True
         )
 
 
         df_transformed.drop(
-            columns=[
-                "Prod_CompositeKey"
-            ],
+            columns=["Prod_CompositeKey"],
             inplace=True
         )
 
 
         # ============================================================
-        # 11) Customer Mapping
-        #
-        # Since all records belong to 客尼亞客,
-        # use fixed 33010499.
+        # 12) Customer Mapping
         # ============================================================
 
         df_customer_mapping = (
             dfs_mapping[
                 "Customer Mapping"
-            ]
-            .copy()
+            ].copy()
         )
 
 
@@ -8036,47 +8016,38 @@ elif transformation_choice == "33010499 客尼亞客":
         )
 
 
-        # Try to find mapping for 33010499 itself
         df_customer_mapping[
             "Cust_CompositeKey"
         ] = (
-
             normalize_key(
                 df_customer_mapping[
                     "ASI_CRM_Offtake_Customer_No__c"
                 ]
             )
-
             + "|33010499"
         )
 
 
-        customer_key = (
-            "33010499|33010499"
-        )
-
-
-        customer_result = (
+        customer_match = (
             df_customer_mapping[
                 df_customer_mapping[
                     "Cust_CompositeKey"
                 ]
-                == customer_key
+                == "33010499|33010499"
             ]
         )
 
 
-        if not customer_result.empty:
+        if not customer_match.empty:
 
             prt_customer_code = (
-                customer_result[
+                customer_match[
                     "ASI_CRM_JDE_Cust_No_Formula__c"
                 ]
                 .iloc[0]
             )
 
         else:
-
             prt_customer_code = None
 
 
@@ -8086,75 +8057,58 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         # ============================================================
-        # 12) Mapping Summary
+        # 13) Mapping Summary
         # ============================================================
-
-        customer_unmapped = (
-            df_transformed[
-                "PRT Customer Code"
-            ]
-            .isna()
-        )
-
-        sku_unmapped = (
-            df_transformed[
-                "SKU Code"
-            ]
-            .isna()
-        )
-
 
         st.write(
             "### 🔍 Mapping Summary"
         )
 
 
-        col1, col2, col3 = (
-            st.columns(3)
-        )
+        col1, col2, col3 = st.columns(3)
 
 
         col1.metric(
             "Products",
-            f"{len(df_transformed):,}"
+            len(df_transformed)
         )
 
 
         col2.metric(
             "Customer Unmapped",
-            f"{customer_unmapped.sum():,}"
+            df_transformed[
+                "PRT Customer Code"
+            ]
+            .isna()
+            .sum()
         )
 
 
         col3.metric(
             "SKU Unmapped",
-            f"{sku_unmapped.sum():,}"
+            df_transformed[
+                "SKU Code"
+            ]
+            .isna()
+            .sum()
         )
 
 
         # ============================================================
-        # 13) Reorder Columns
+        # 14) Reorder final columns
         # ============================================================
 
         column_order = [
-
             "Column1",
             "Column2",
             "Column3",
             "Column4",
-
             "PRT Customer Code",
-
             "Outlet Name",
-
             "Date",
-
             "SKU Code",
-
             "Product Code",
-
             "Product Name",
-
             "Number of Bottles"
         ]
 
@@ -8167,13 +8121,12 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         # ============================================================
-        # 14) Preview
+        # 15) Preview
         # ============================================================
 
         st.write(
             "✅ Processed Data Preview:"
         )
-
 
         show_mapping_preview(
             df_transformed
@@ -8181,7 +8134,7 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         # ============================================================
-        # 15) Export
+        # 16) Export
         # ============================================================
 
         output = io.BytesIO()
@@ -8193,13 +8146,9 @@ elif transformation_choice == "33010499 客尼亞客":
         ) as writer:
 
             df_transformed.to_excel(
-
                 writer,
-
                 index=False,
-
                 header=False
-
             )
 
 
@@ -8207,22 +8156,17 @@ elif transformation_choice == "33010499 客尼亞客":
 
 
         st.download_button(
-
-            label=(
-                "📥 Download Processed File"
-            ),
-
+            label="📥 Download Processed File",
             data=output.getvalue(),
-
-            file_name=(
-                "33010499 transformation.xlsx"
-            ),
-
+            file_name="33010499 transformation.xlsx",
             mime=(
                 "application/vnd.openxmlformats-"
                 "officedocument.spreadsheetml.sheet"
             )
         )
+
+            
+
 elif transformation_choice == "30030105 上景":
 
     raw_data_file = st.file_uploader("Upload Raw Sales Data (.xls/.xlsx)", type=["xls", "xlsx"], key="shangjing_raw")
