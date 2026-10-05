@@ -326,7 +326,7 @@ st.write("Upload an Excel file and choose the transformation format.")
 transformation_choice = st.selectbox("Select Transformation Format:", ["30010008 利多吉", "30010010 酒倉盛豐行", "30010013 酒田", "30010017 正興(振興)", "30010031 廣茂隆(八條)", "30010059 誠邦有限公司", "30010061 向日葵", "30010085 宏酒樽 (夜)", "30010154 亨玖", 
                                                                        "30010176 振泰 ON", "30010185 瑞星翰德(夜點)", "30010199 振泰 OFF", "30010203 宏酒樽 (日)", "30010225 連大立", "30010315 圳程", "30010316 大倉捷", "30020016 日嵩", "30020023 松勇ON", "30020027 榮好(實儀)", "30020076 酒國英豪", 
                                                                        "30020145 鏵錡", "30020177 富為MM(甲揚)", "30020180 暐倫 OFF", "30020203 玄星 OFF", "30020216 久悅貿易", "30030010 信禕", "30030021 合歡 ON", "30030061 合歡 OFF", "30030076 裕陞（分月）", "30030083 東瀛", "30030084 華恩", "30030088 九久", 
-                                                                       "30030094 和易 ON", "30030105 上景", "30030106 明輝", "33001422 和易 OFF"])
+                                                                       "30030094 和易 ON", "30030105 上景", "30030106 明輝", "33001422 和易 OFF", "33010499 客尼亞客"])
 
 
 if transformation_choice == "30010085 宏酒樽 (夜)":
@@ -7524,6 +7524,915 @@ elif transformation_choice == "30030010 信禕":
         final[export_cols].to_excel(out_name, index=False, header=False)
         with open(out_name, "rb") as f:
             st.download_button("📥 Download Processed File", f, file_name=out_name)
+            
+elif transformation_choice == "33010499 客尼亞客":
+
+    import io
+
+    raw_data_file = st.file_uploader(
+        "Upload Raw Sales Data",
+        type=["xlsx"],
+        key="kenya_raw"
+    )
+
+    mapping_file = st.file_uploader(
+        "Upload Mapping File",
+        type=["xlsx"],
+        key="kenya_mapping"
+    )
+
+    if raw_data_file is not None and mapping_file is not None:
+
+        # ============================================================
+        # 1) Read uploaded files into memory
+        # ============================================================
+
+        raw_bytes = raw_data_file.getvalue()
+        mapping_bytes = mapping_file.getvalue()
+
+        # ============================================================
+        # 2) Helper - Minguo date -> YYYYMMDD
+        # ============================================================
+
+        def kenya_minguo_to_yyyymmdd(value):
+
+            if pd.isna(value):
+                return None
+
+            value = str(value).strip()
+
+            # Example: 115/09/01
+            match = re.fullmatch(
+                r"(\d{2,3})/(\d{1,2})/(\d{1,2})",
+                value
+            )
+
+            if match:
+
+                year = int(match.group(1))
+                month = int(match.group(2))
+                day = int(match.group(3))
+
+                year += 1911
+
+                return f"{year:04d}{month:02d}{day:02d}"
+
+            # Fallback
+            try:
+                return pd.to_datetime(
+                    value
+                ).strftime("%Y%m%d")
+
+            except Exception:
+                return None
+
+
+        # ============================================================
+        # 3) Find valid sales sheet automatically
+        # ============================================================
+
+        xls = pd.ExcelFile(
+            io.BytesIO(raw_bytes)
+        )
+
+        target_sheet = None
+        df_raw = None
+
+        for sheet in xls.sheet_names:
+
+            temp = pd.read_excel(
+                io.BytesIO(raw_bytes),
+                sheet_name=sheet,
+                header=None
+            )
+
+            if temp.empty:
+                continue
+
+            # Look for header row containing:
+            # 貨單日期 / 客戶編號 / 客戶簡稱
+            found_header = False
+
+            for i in range(
+                min(30, len(temp))
+            ):
+
+                row_values = (
+                    temp.iloc[i]
+                    .astype(str)
+                    .str.strip()
+                    .tolist()
+                )
+
+                if (
+                    "貨單日期" in row_values
+                    and "客戶編號" in row_values
+                    and "客戶簡稱" in row_values
+                ):
+                    found_header = True
+                    break
+
+            if found_header:
+
+                target_sheet = sheet
+                df_raw = temp
+                break
+
+
+        if target_sheet is None:
+
+            st.error(
+                "❌ 找不到符合客尼亞客格式的工作表。"
+            )
+
+            st.write(
+                "Workbook sheets:",
+                xls.sheet_names
+            )
+
+            st.stop()
+
+
+        st.success(
+            f"✅ Detected sales sheet: {target_sheet}"
+        )
+
+
+        # ============================================================
+        # 4) Find header row
+        # ============================================================
+
+        header_idx = None
+
+        for i in range(
+            min(30, len(df_raw))
+        ):
+
+            col0 = (
+                str(df_raw.iat[i, 0]).strip()
+                if df_raw.shape[1] > 0
+                else ""
+            )
+
+            col1 = (
+                str(df_raw.iat[i, 1]).strip()
+                if df_raw.shape[1] > 1
+                else ""
+            )
+
+            col2 = (
+                str(df_raw.iat[i, 2]).strip()
+                if df_raw.shape[1] > 2
+                else ""
+            )
+
+            if (
+                col0 == "貨單日期"
+                and col1 == "客戶編號"
+                and col2 == "客戶簡稱"
+            ):
+
+                header_idx = i
+                break
+
+
+        if header_idx is None:
+
+            st.error(
+                "❌ 無法找到欄位：貨單日期 / 客戶編號 / 客戶簡稱"
+            )
+
+            st.stop()
+
+
+        # ============================================================
+        # 5) Extract Product + Sales Transactions
+        # ============================================================
+
+        rows = []
+
+        current_product_code = None
+        current_product_name = None
+
+
+        for r in range(
+            header_idx + 1,
+            len(df_raw)
+        ):
+
+            first_cell = (
+                str(df_raw.iat[r, 0]).strip()
+                if not pd.isna(
+                    df_raw.iat[r, 0]
+                )
+                else ""
+            )
+
+
+            # --------------------------------------------------------
+            # Product header row
+            #
+            # Example:
+            # 貨品編號:PRGL13001  貨品名稱:格蘭利威13年40%(外盒)
+            # --------------------------------------------------------
+
+            if (
+                "貨品編號" in first_cell
+                and "貨品名稱" in first_cell
+            ):
+
+                product_code_match = re.search(
+                    r"貨品編號\s*[:：]\s*([^\s]+)",
+                    first_cell
+                )
+
+                product_name_match = re.search(
+                    r"貨品名稱\s*[:：]\s*(.+)$",
+                    first_cell
+                )
+
+                if product_code_match:
+
+                    current_product_code = (
+                        product_code_match
+                        .group(1)
+                        .strip()
+                    )
+
+                if product_name_match:
+
+                    current_product_name = (
+                        product_name_match
+                        .group(1)
+                        .strip()
+                    )
+
+                continue
+
+
+            # --------------------------------------------------------
+            # Skip subtotal / total rows
+            # --------------------------------------------------------
+
+            if first_cell in [
+                "小計",
+                "合計",
+                "總計"
+            ]:
+                continue
+
+
+            # --------------------------------------------------------
+            # Only process actual transaction rows
+            #
+            # Example:
+            # 115/09/01
+            # --------------------------------------------------------
+
+            if not re.fullmatch(
+                r"\d{2,3}/\d{1,2}/\d{1,2}",
+                first_cell
+            ):
+                continue
+
+
+            # No product context -> skip
+            if not current_product_code:
+                continue
+
+
+            # ========================================================
+            # Raw columns
+            # ========================================================
+
+            date_value = df_raw.iat[r, 0]
+
+            customer_code = (
+                df_raw.iat[r, 1]
+                if df_raw.shape[1] > 1
+                else None
+            )
+
+            customer_name = (
+                df_raw.iat[r, 2]
+                if df_raw.shape[1] > 2
+                else None
+            )
+
+            quantity = (
+                df_raw.iat[r, 4]
+                if df_raw.shape[1] > 4
+                else None
+            )
+
+
+            # --------------------------------------------------------
+            # Quantity numeric
+            # --------------------------------------------------------
+
+            quantity = pd.to_numeric(
+                quantity,
+                errors="coerce"
+            )
+
+            if pd.isna(quantity):
+                continue
+
+
+            # Skip zero quantity
+            if quantity == 0:
+                continue
+
+
+            rows.append({
+
+                "Date":
+                    kenya_minguo_to_yyyymmdd(
+                        date_value
+                    ),
+
+                "Outlet Code":
+                    customer_code,
+
+                "Outlet Name":
+                    customer_name,
+
+                "Product Code":
+                    current_product_code,
+
+                "Product Name":
+                    current_product_name,
+
+                "Number of Bottles":
+                    quantity
+            })
+
+
+        # ============================================================
+        # 6) Build raw transformed dataframe
+        # ============================================================
+
+        df_transformed = pd.DataFrame(
+            rows
+        )
+
+
+        if df_transformed.empty:
+
+            st.error(
+                "❌ 找到 worksheet，但沒有抓到任何有效交易資料。"
+            )
+
+            st.stop()
+
+
+        # ============================================================
+        # 7) Clean Raw Fields
+        # ============================================================
+
+        df_transformed[
+            "Outlet Code"
+        ] = normalize_key(
+            df_transformed[
+                "Outlet Code"
+            ]
+        )
+
+
+        df_transformed[
+            "Product Code"
+        ] = normalize_key(
+            df_transformed[
+                "Product Code"
+            ]
+        )
+
+
+        df_transformed[
+            "Number of Bottles"
+        ] = (
+            pd.to_numeric(
+                df_transformed[
+                    "Number of Bottles"
+                ],
+                errors="coerce"
+            )
+            .fillna(0)
+        )
+
+
+        # Convert integer-looking quantity
+        df_transformed[
+            "Number of Bottles"
+        ] = (
+            df_transformed[
+                "Number of Bottles"
+            ]
+            .astype(int)
+        )
+
+
+        # ============================================================
+        # 8) Add fixed columns
+        # ============================================================
+
+        df_transformed.insert(
+            0,
+            "Column1",
+            "INV"
+        )
+
+        df_transformed.insert(
+            1,
+            "Column2",
+            "U"
+        )
+
+        df_transformed.insert(
+            2,
+            "Column3",
+            "33010499"
+        )
+
+        df_transformed.insert(
+            3,
+            "Column4",
+            "客尼亞客"
+        )
+
+
+        # ============================================================
+        # 9) Read Mapping File
+        # ============================================================
+
+        try:
+
+            mapping_xls = pd.ExcelFile(
+                io.BytesIO(
+                    mapping_bytes
+                )
+            )
+
+            sheets_mapping = (
+                mapping_xls.sheet_names
+            )
+
+            dfs_mapping = {
+
+                sheet:
+                pd.read_excel(
+                    io.BytesIO(
+                        mapping_bytes
+                    ),
+                    sheet_name=sheet
+                )
+
+                for sheet in
+                sheets_mapping
+            }
+
+        except Exception as e:
+
+            st.error(
+                f"❌ Mapping file 讀取失敗: {e}"
+            )
+
+            st.stop()
+
+
+        # ============================================================
+        # 10) SKU Mapping
+        # ============================================================
+
+        df_sku_mapping = (
+            dfs_mapping[
+                "SKU Mapping"
+            ].copy()
+        )
+
+
+        required_sku_columns = [
+
+            "ASI_CRM_Offtake_Product__c",
+            "ASI_CRM_SKU_Code__c",
+            "ASI_CRM_Mapping_Cust_Code__c"
+
+        ]
+
+
+        missing_sku_columns = [
+
+            c for c in
+            required_sku_columns
+
+            if c not in
+            df_sku_mapping.columns
+
+        ]
+
+
+        if missing_sku_columns:
+
+            st.error(
+                "❌ SKU Mapping 缺少欄位: "
+                + ", ".join(
+                    missing_sku_columns
+                )
+            )
+
+            st.stop()
+
+
+        # Only mapping belonging to 33010499
+        df_sku_mapping = (
+            df_sku_mapping[
+                normalize_key(
+                    df_sku_mapping[
+                        "ASI_CRM_Mapping_Cust_Code__c"
+                    ]
+                )
+                == "33010499"
+            ]
+            .copy()
+        )
+
+
+        # Composite Key
+        df_sku_mapping[
+            "Prod_CompositeKey"
+        ] = (
+
+            normalize_key(
+                df_sku_mapping[
+                    "ASI_CRM_Offtake_Product__c"
+                ]
+            )
+
+            + "|"
+
+            + normalize_key(
+                df_sku_mapping[
+                    "ASI_CRM_Mapping_Cust_Code__c"
+                ]
+            )
+
+        )
+
+
+        # Prevent merge row multiplication
+        df_sku_mapping = (
+            df_sku_mapping
+            .drop_duplicates(
+                subset=[
+                    "Prod_CompositeKey"
+                ],
+                keep="first"
+            )
+        )
+
+
+        df_transformed[
+            "Prod_CompositeKey"
+        ] = (
+
+            normalize_key(
+                df_transformed[
+                    "Product Code"
+                ]
+            )
+
+            + "|33010499"
+
+        )
+
+
+        df_transformed = (
+            df_transformed
+            .merge(
+
+                df_sku_mapping[
+                    [
+                        "Prod_CompositeKey",
+                        "ASI_CRM_SKU_Code__c"
+                    ]
+                ],
+
+                on="Prod_CompositeKey",
+
+                how="left"
+            )
+        )
+
+
+        df_transformed.rename(
+
+            columns={
+
+                "ASI_CRM_SKU_Code__c":
+                    "SKU Code"
+
+            },
+
+            inplace=True
+        )
+
+
+        df_transformed.drop(
+
+            columns=[
+                "Prod_CompositeKey"
+            ],
+
+            inplace=True
+        )
+
+
+        # ============================================================
+        # 11) Customer Mapping
+        # ============================================================
+
+        df_customer_mapping = (
+            dfs_mapping[
+                "Customer Mapping"
+            ]
+            .copy()
+        )
+
+
+        required_customer_columns = [
+
+            "ASI_CRM_Offtake_Customer_No__c",
+            "ASI_CRM_JDE_Cust_No_Formula__c",
+            "ASI_CRM_Mapping_Cust_No__c"
+
+        ]
+
+
+        missing_customer_columns = [
+
+            c for c in
+            required_customer_columns
+
+            if c not in
+            df_customer_mapping.columns
+
+        ]
+
+
+        if missing_customer_columns:
+
+            st.error(
+                "❌ Customer Mapping 缺少欄位: "
+                + ", ".join(
+                    missing_customer_columns
+                )
+            )
+
+            st.stop()
+
+
+        # Only 33010499
+        df_customer_mapping = (
+            df_customer_mapping[
+                normalize_key(
+                    df_customer_mapping[
+                        "ASI_CRM_Mapping_Cust_No__c"
+                    ]
+                )
+                == "33010499"
+            ]
+            .copy()
+        )
+
+
+        df_customer_mapping[
+            "Cust_CompositeKey"
+        ] = (
+
+            normalize_key(
+                df_customer_mapping[
+                    "ASI_CRM_Offtake_Customer_No__c"
+                ]
+            )
+
+            + "|"
+
+            + normalize_key(
+                df_customer_mapping[
+                    "ASI_CRM_Mapping_Cust_No__c"
+                ]
+            )
+
+        )
+
+
+        # Prevent merge duplication
+        df_customer_mapping = (
+            df_customer_mapping
+            .drop_duplicates(
+                subset=[
+                    "Cust_CompositeKey"
+                ],
+                keep="first"
+            )
+        )
+
+
+        df_transformed[
+            "Cust_CompositeKey"
+        ] = (
+
+            normalize_key(
+                df_transformed[
+                    "Outlet Code"
+                ]
+            )
+
+            + "|33010499"
+
+        )
+
+
+        df_transformed = (
+            df_transformed
+            .merge(
+
+                df_customer_mapping[
+                    [
+                        "Cust_CompositeKey",
+                        "ASI_CRM_JDE_Cust_No_Formula__c"
+                    ]
+                ],
+
+                on="Cust_CompositeKey",
+
+                how="left"
+            )
+        )
+
+
+        df_transformed.rename(
+
+            columns={
+
+                "ASI_CRM_JDE_Cust_No_Formula__c":
+                    "PRT Customer Code"
+
+            },
+
+            inplace=True
+        )
+
+
+        df_transformed.drop(
+
+            columns=[
+                "Cust_CompositeKey"
+            ],
+
+            inplace=True
+        )
+
+
+        # ============================================================
+        # 12) Mapping Quality Check
+        # ============================================================
+
+        customer_unmapped = (
+            df_transformed[
+                "PRT Customer Code"
+            ]
+            .isna()
+        )
+
+
+        sku_unmapped = (
+            df_transformed[
+                "SKU Code"
+            ]
+            .isna()
+        )
+
+
+        st.write(
+            "### 🔍 Mapping Summary"
+        )
+
+
+        col1, col2, col3 = st.columns(3)
+
+
+        col1.metric(
+            "Total Rows",
+            f"{len(df_transformed):,}"
+        )
+
+
+        col2.metric(
+            "Customer Unmapped",
+            f"{customer_unmapped.sum():,}"
+        )
+
+
+        col3.metric(
+            "SKU Unmapped",
+            f"{sku_unmapped.sum():,}"
+        )
+
+
+        # ============================================================
+        # 13) Reorder columns
+        # ============================================================
+
+        column_order = [
+
+            "Column1",
+            "Column2",
+            "Column3",
+            "Column4",
+
+            "PRT Customer Code",
+            "Outlet Name",
+
+            "Date",
+
+            "SKU Code",
+            "Product Code",
+            "Product Name",
+
+            "Number of Bottles"
+
+        ]
+
+
+        df_transformed = (
+            df_transformed[
+                column_order
+            ]
+        )
+
+
+        # ============================================================
+        # 14) Preview
+        # ============================================================
+
+        st.write(
+            "✅ Processed Data Preview:"
+        )
+
+
+        show_mapping_preview(
+            df_transformed
+        )
+
+
+        # ============================================================
+        # 15) Export Excel in memory
+        # ============================================================
+
+        output = io.BytesIO()
+
+
+        with pd.ExcelWriter(
+            output,
+            engine="openpyxl"
+        ) as writer:
+
+            df_transformed.to_excel(
+
+                writer,
+
+                index=False,
+
+                header=False
+
+            )
+
+
+        output.seek(0)
+
+
+        # ============================================================
+        # 16) Download
+        # ============================================================
+
+        st.download_button(
+
+            label=(
+                "📥 Download Processed File"
+            ),
+
+            data=output.getvalue(),
+
+            file_name=(
+                "33010499 transformation.xlsx"
+            ),
+
+            mime=(
+                "application/vnd.openxmlformats-"
+                "officedocument.spreadsheetml.sheet"
+            )
+        )
 
 elif transformation_choice == "30030105 上景":
 
