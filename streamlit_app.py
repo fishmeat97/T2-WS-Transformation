@@ -5708,21 +5708,69 @@ elif transformation_choice == "30020076 酒國英豪":
             return False
 
         def to_ymd(x) -> str:
-            """Convert 'YYYY/MM/DD' or Timestamp to 'YYYYMMDD'. Otherwise blank."""
-            if pd.isna(x):
-                return ""
-            if isinstance(x, pd.Timestamp):
-                return x.strftime("%Y%m%d")
-            s = str(x).strip()
-            m = re.match(r'^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$', s)
-            if m:
-                return f"{int(m.group(1)):04d}{int(m.group(2)):02d}{int(m.group(3)):02d}"
-            # last-resort parse
-            try:
-                dt = pd.to_datetime(s, errors="coerce")
-                return dt.strftime("%Y%m%d") if pd.notna(dt) else ""
-            except Exception:
-                return ""
+    """
+    Convert date to YYYYMMDD.
+
+    Supports:
+    - Gregorian: 2026/09/01, 2026-09-01
+    - Minguo:    115/09/01, 115-09-01
+    - pandas Timestamp
+
+    Returns blank if conversion fails.
+    """
+
+    if pd.isna(x):
+        return ""
+
+    # Timestamp
+    if isinstance(x, pd.Timestamp):
+        return x.strftime("%Y%m%d")
+
+    s = str(x).strip()
+
+    # Match YYYY/MM/DD, YYYY-MM-DD
+    # or Minguo YYY/MM/DD, YYY-MM-DD
+    m = re.match(
+        r'^(\d{2,4})[/-](\d{1,2})[/-](\d{1,2})$',
+        s
+    )
+
+    if m:
+        year = int(m.group(1))
+        month = int(m.group(2))
+        day = int(m.group(3))
+
+        # Minguo year -> Gregorian year
+        if year < 1911:
+            year += 1911
+
+        try:
+            dt = pd.Timestamp(
+                year=year,
+                month=month,
+                day=day
+            )
+
+            return dt.strftime("%Y%m%d")
+
+        except Exception:
+            return ""
+
+    # Last-resort parse
+    try:
+        dt = pd.to_datetime(
+            s,
+            errors="coerce"
+        )
+
+        return (
+            dt.strftime("%Y%m%d")
+            if pd.notna(dt)
+            else ""
+        )
+
+    except Exception:
+        return ""
 
         def unique_only_map(df, key_col, val_col, normalize=lambda s: s, group_col=None):
             """Build key->val map taking the first value for each key."""
