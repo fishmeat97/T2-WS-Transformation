@@ -5707,7 +5707,7 @@ elif transformation_choice == "30020076 酒國英豪":
                 return True
             return False
 
-        def to_ymd(x) -> str:
+       def to_ymd(x) -> str:
     """
     Convert date to YYYYMMDD.
 
@@ -5722,14 +5722,11 @@ elif transformation_choice == "30020076 酒國英豪":
     if pd.isna(x):
         return ""
 
-    # Timestamp
     if isinstance(x, pd.Timestamp):
         return x.strftime("%Y%m%d")
 
     s = str(x).strip()
 
-    # Match YYYY/MM/DD, YYYY-MM-DD
-    # or Minguo YYY/MM/DD, YYY-MM-DD
     m = re.match(
         r'^(\d{2,4})[/-](\d{1,2})[/-](\d{1,2})$',
         s
@@ -5740,7 +5737,7 @@ elif transformation_choice == "30020076 酒國英豪":
         month = int(m.group(2))
         day = int(m.group(3))
 
-        # Minguo year -> Gregorian year
+        # 民國年 → 西元年
         if year < 1911:
             year += 1911
 
@@ -5756,7 +5753,6 @@ elif transformation_choice == "30020076 酒國英豪":
         except Exception:
             return ""
 
-    # Last-resort parse
     try:
         dt = pd.to_datetime(
             s,
@@ -5771,7 +5767,6 @@ elif transformation_choice == "30020076 酒國英豪":
 
     except Exception:
         return ""
-
         def unique_only_map(df, key_col, val_col, normalize=lambda s: s, group_col=None):
             """Build key->val map taking the first value for each key."""
             if group_col:
