@@ -5706,8 +5706,7 @@ elif transformation_choice == "30020076 酒國英豪":
             if c0 == "單據日期" and c1 == "單據編號" and c2 == "客戶編號" and c3 in ("客戶簡稱", "客戶名稱") and ("數量" in c4):
                 return True
             return False
-
-       def to_ymd(x) -> str:
+def to_ymd(x) -> str:
     """
     Convert date to YYYYMMDD.
 
@@ -5718,7 +5717,6 @@ elif transformation_choice == "30020076 酒國英豪":
 
     Returns blank if conversion fails.
     """
-
     if pd.isna(x):
         return ""
 
@@ -5737,7 +5735,7 @@ elif transformation_choice == "30020076 酒國英豪":
         month = int(m.group(2))
         day = int(m.group(3))
 
-        # 民國年 → 西元年
+        # 民國年 -> 西元年
         if year < 1911:
             year += 1911
 
@@ -5747,7 +5745,6 @@ elif transformation_choice == "30020076 酒國英豪":
                 month=month,
                 day=day
             )
-
             return dt.strftime("%Y%m%d")
 
         except Exception:
@@ -5767,6 +5764,8 @@ elif transformation_choice == "30020076 酒國英豪":
 
     except Exception:
         return ""
+    
+        
         def unique_only_map(df, key_col, val_col, normalize=lambda s: s, group_col=None):
             """Build key->val map taking the first value for each key."""
             if group_col:
