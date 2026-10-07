@@ -5790,87 +5790,675 @@ elif transformation_choice == "30020076 酒國英豪":
         norm_code = lambda s: str(s).strip().upper().replace(" ", "").replace(".0", "")
         norm_sku  = lambda s: str(s).strip().upper()
 
-        # -------- 1) Parse all sheets (blocks per '貨品編號:' then detail table) --------
-        xls = pd.ExcelFile(raw_data_file, engine=raw_eng)
-        sheets = xls.sheet_names
+               # ============================================================
+        # 1) Parse all sheets
+        #
+        # Support TWO 酒國英豪 templates:
+        #
+        # Template A:
+        #   貨品編號: XXX ...
+        #   單據日期 | 單據編號 | 客戶編號 | 客戶簡稱 | 數量
+        #
+        # Template B:
+        #   起瓦士報表 / flat table format
+        #   Date / Customer / Product / Quantity are in same table
+        # ============================================================
 
-        def parse_sheet(sheet_name: str) -> pd.DataFrame:
-            df = pd.read_excel(raw_data_file, sheet_name=sheet_name, header=None, engine=raw_eng)
-            if df.empty:
-                return pd.DataFrame()
+
+        def clean_text(x):
+            if pd.isna(x):
+                return ""
+
+            return (
+                str(x)
+                .replace("\u3000", " ")
+                .replace("\xa0", " ")
+                .strip()
+            )
+
+
+        # ============================================================
+        # Template A - Original 酒國英豪 format
+        # ============================================================
+
+        def parse_old_template(df, sheet_name):
 
             recs = []
-            current_prod_code, current_prod_name = "", ""
+
+            current_prod_code = ""
+            current_prod_name = ""
 
             for r in range(len(df)):
-                c0 = df.iat[r, 0] if 0 < df.shape[1] else None
-                s0 = str(c0).strip() if pd.notna(c0) else ""
 
-                # Product header e.g. "貨品編號:B07002-004 格蘭利威13年雪莉桶-0.7L"
-                if s0.startswith("貨品編號:"):
-                    m = re.match(r'貨品編號[:：]\s*([A-Za-z0-9\-]+)\s+(.+)', s0)
+                c0 = (
+                    clean_text(df.iat[r, 0])
+                    if df.shape[1] > 0
+                    else ""
+                )
+
+                # ----------------------------------------------------
+                # Product header
+                # Example:
+                # 貨品編號:B07002-004 格蘭利威13年雪莉桶-0.7L
+                # ----------------------------------------------------
+
+                if c0.startswith("貨品編號:") or c0.startswith("貨品編號："):
+
+                    m = re.match(
+                        r"貨品編號[:：]\s*([A-Za-z0-9\-_]+)\s+(.+)",
+                        c0
+                    )
+
                     if m:
-                        current_prod_code = m.group(1).strip().upper()
-                        current_prod_name = m.group(2).strip()
+
+                        current_prod_code = (
+                            m.group(1)
+                            .strip()
+                            .upper()
+                        )
+
+                        current_prod_name = (
+                            m.group(2)
+                            .strip()
+                        )
+
                     else:
-                        current_prod_code = s0.split("貨品編號:")[-1].strip().upper()
-                        current_prod_name = ""
+
+                        temp = re.sub(
+                            r"^貨品編號[:：]",
+                            "",
+                            c0
+                        ).strip()
+
+                        parts = temp.split(
+                            maxsplit=1
+                        )
+
+                        current_prod_code = (
+                            parts[0]
+                            .strip()
+                            .upper()
+                            if parts
+                            else ""
+                        )
+
+                        current_prod_name = (
+                            parts[1].strip()
+                            if len(parts) > 1
+                            else ""
+                        )
+
                     continue
 
-                # Detail table header for this product block
+
+                # ----------------------------------------------------
+                # Detail header
+                # ----------------------------------------------------
+
                 if is_table_header(df, r):
+
                     i = r + 1
+
                     while i < len(df):
+
                         row = df.iloc[i]
-                        # stop conditions: blank row, a new report title, or next product header
-                        s00 = str(row[0]).strip() if pd.notna(row[0]) else ""
-                        if (pd.isna(row[0]) and pd.isna(row[1]) and pd.isna(row[2]) and pd.isna(row[3])) \
-                           or s00.startswith("酒國英豪洋酒有限公司") or s00.startswith("貨品編號:"):
+
+                        s00 = (
+                            clean_text(row.iloc[0])
+                            if len(row) > 0
+                            else ""
+                        )
+
+                        # Next block / end
+                        if (
+                            s00.startswith("貨品編號:")
+                            or s00.startswith("貨品編號：")
+                        ):
                             break
 
-                        date_cell = row[0]
-                        doc_no    = str(row[1]).strip() if pd.notna(row[1]) else ""
-                        cust_ext  = str(row[2]).strip() if pd.notna(row[2]) else ""
-                        cust_name = str(row[3]).strip() if pd.notna(row[3]) else ""
-                        qty_val   = pd.to_numeric(row[4], errors="coerce")
+                        # Completely blank
+                        first_four_blank = True
 
-                        if current_prod_code and cust_name and pd.notna(qty_val) and qty_val != 0:
-                            ymd = to_ymd(date_cell)
+                        for c in range(
+                            min(4, len(row))
+                        ):
 
-                            # Return logic: if doc number indicates return, force negative
-                            doc_mark = doc_no or ""
-                            is_return = any(x in doc_mark for x in ("銷退", "退回", "退貨", "銷售退回"))
-                            qty = -abs(int(qty_val)) if is_return else int(qty_val)
+                            if clean_text(
+                                row.iloc[c]
+                            ):
+                                first_four_blank = False
+                                break
+
+                        if first_four_blank:
+                            break
+
+
+                        date_cell = (
+                            row.iloc[0]
+                            if len(row) > 0
+                            else None
+                        )
+
+                        doc_no = (
+                            clean_text(row.iloc[1])
+                            if len(row) > 1
+                            else ""
+                        )
+
+                        cust_ext = (
+                            clean_text(row.iloc[2])
+                            if len(row) > 2
+                            else ""
+                        )
+
+                        cust_name = (
+                            clean_text(row.iloc[3])
+                            if len(row) > 3
+                            else ""
+                        )
+
+                        qty_val = (
+                            pd.to_numeric(
+                                row.iloc[4],
+                                errors="coerce"
+                            )
+                            if len(row) > 4
+                            else None
+                        )
+
+
+                        if (
+                            current_prod_code
+                            and cust_name
+                            and pd.notna(qty_val)
+                            and qty_val != 0
+                        ):
+
+                            ymd = to_ymd(
+                                date_cell
+                            )
+
+
+                            # Return
+                            is_return = any(
+                                x in doc_no
+                                for x in (
+                                    "銷退",
+                                    "退回",
+                                    "退貨",
+                                    "銷售退回"
+                                )
+                            )
+
+
+                            qty = (
+                                -abs(int(qty_val))
+                                if is_return
+                                else int(qty_val)
+                            )
+
 
                             recs.append({
-                                "Date": ymd,
-                                "CustomerCode_ext": cust_ext,
-                                "CustomerName": cust_name,
-                                "ProductCode": current_prod_code,
-                                "ProductName": current_prod_name,
-                                "Quantity": qty,
-                                "DocNo": doc_no,
-                                "Sheet": sheet_name
+
+                                "Date":
+                                    ymd,
+
+                                "CustomerCode_ext":
+                                    cust_ext,
+
+                                "CustomerName":
+                                    cust_name,
+
+                                "ProductCode":
+                                    current_prod_code,
+
+                                "ProductName":
+                                    current_prod_name,
+
+                                "Quantity":
+                                    qty,
+
+                                "DocNo":
+                                    doc_no,
+
+                                "Sheet":
+                                    sheet_name,
+
+                                "Template":
+                                    "Original"
                             })
+
+
                         i += 1
+
 
             return pd.DataFrame(recs)
 
-        frames, parse_log = [], []
-        for s in sheets:
+
+        # ============================================================
+        # Template B - 起瓦士 / Flat-table format
+        # ============================================================
+
+        def parse_chivas_template(df, sheet_name):
+
+            # --------------------------------------------------------
+            # Possible header names
+            # --------------------------------------------------------
+
+            aliases = {
+
+                "date": [
+                    "單據日期",
+                    "日期",
+                    "貨單日期",
+                    "銷售日期",
+                    "出貨日期"
+                ],
+
+                "doc": [
+                    "單據編號",
+                    "單號",
+                    "貨單編號",
+                    "銷貨單號"
+                ],
+
+                "cust_code": [
+                    "客戶編號",
+                    "客戶代號",
+                    "客戶編碼"
+                ],
+
+                "cust_name": [
+                    "客戶簡稱",
+                    "客戶名稱",
+                    "客戶名"
+                ],
+
+                "product_code": [
+                    "貨品編號",
+                    "產品編號",
+                    "商品編號",
+                    "品號",
+                    "產品代號"
+                ],
+
+                "product_name": [
+                    "貨品名稱",
+                    "產品名稱",
+                    "商品名稱",
+                    "品名",
+                    "名稱規格"
+                ],
+
+                "qty": [
+                    "數量",
+                    "銷售數量",
+                    "出貨數量",
+                    "實銷",
+                    "數量(瓶)",
+                    "數量（瓶）"
+                ]
+            }
+
+
+            # --------------------------------------------------------
+            # Find table header
+            # --------------------------------------------------------
+
+            header_idx = None
+            column_map = {}
+
+
+            for r in range(
+                min(50, len(df))
+            ):
+
+                detected = {}
+
+
+                for c in range(
+                    df.shape[1]
+                ):
+
+                    value = clean_text(
+                        df.iat[r, c]
+                    )
+
+
+                    if not value:
+                        continue
+
+
+                    for field, candidates in aliases.items():
+
+                        if any(
+                            candidate == value
+                            or candidate in value
+                            for candidate in candidates
+                        ):
+
+                            if field not in detected:
+                                detected[field] = c
+
+
+                # Need at least:
+                # date + customer + product + quantity
+                required_found = (
+
+                    "date" in detected
+
+                    and (
+                        "cust_code" in detected
+                        or "cust_name" in detected
+                    )
+
+                    and "product_code" in detected
+
+                    and "qty" in detected
+
+                )
+
+
+                if required_found:
+
+                    header_idx = r
+                    column_map = detected
+                    break
+
+
+            if header_idx is None:
+
+                return pd.DataFrame()
+
+
+            # Debug / future maintenance
+            st.caption(
+                f"Detected 起瓦士 template header "
+                f"at row {header_idx + 1}"
+            )
+
+
+            recs = []
+
+
+            # --------------------------------------------------------
+            # Read transactions
+            # --------------------------------------------------------
+
+            for r in range(
+                header_idx + 1,
+                len(df)
+            ):
+
+                row = df.iloc[r]
+
+
+                def get_value(field):
+
+                    col = column_map.get(
+                        field
+                    )
+
+                    if col is None:
+                        return None
+
+                    if col >= len(row):
+                        return None
+
+                    return row.iloc[col]
+
+
+                date_raw = get_value(
+                    "date"
+                )
+
+                date_text = clean_text(
+                    date_raw
+                )
+
+
+                # ----------------------------------------------------
+                # Only actual transaction rows
+                # ----------------------------------------------------
+
+                if not re.fullmatch(
+                    r"\d{2,4}[/-]\d{1,2}[/-]\d{1,2}",
+                    date_text
+                ):
+                    continue
+
+
+                customer_code = clean_text(
+                    get_value(
+                        "cust_code"
+                    )
+                )
+
+                customer_name = clean_text(
+                    get_value(
+                        "cust_name"
+                    )
+                )
+
+                product_code = clean_text(
+                    get_value(
+                        "product_code"
+                    )
+                ).upper()
+
+                product_name = clean_text(
+                    get_value(
+                        "product_name"
+                    )
+                )
+
+                doc_no = clean_text(
+                    get_value(
+                        "doc"
+                    )
+                )
+
+
+                qty = pd.to_numeric(
+                    get_value(
+                        "qty"
+                    ),
+                    errors="coerce"
+                )
+
+
+                if (
+                    not product_code
+                    or pd.isna(qty)
+                    or qty == 0
+                ):
+                    continue
+
+
+                # ----------------------------------------------------
+                # Return logic
+                # ----------------------------------------------------
+
+                is_return = any(
+                    word in doc_no
+                    for word in (
+                        "銷退",
+                        "退貨",
+                        "退回",
+                        "銷售退回"
+                    )
+                )
+
+
+                qty = (
+                    -abs(int(qty))
+                    if is_return
+                    else int(qty)
+                )
+
+
+                recs.append({
+
+                    "Date":
+                        to_ymd(
+                            date_raw
+                        ),
+
+                    "CustomerCode_ext":
+                        customer_code,
+
+                    "CustomerName":
+                        customer_name,
+
+                    "ProductCode":
+                        product_code,
+
+                    "ProductName":
+                        product_name,
+
+                    "Quantity":
+                        qty,
+
+                    "DocNo":
+                        doc_no,
+
+                    "Sheet":
+                        sheet_name,
+
+                    "Template":
+                        "Chivas"
+                })
+
+
+            return pd.DataFrame(
+                recs
+            )
+
+
+        # ============================================================
+        # Auto detect per sheet
+        # ============================================================
+
+        xls = pd.ExcelFile(
+            raw_data_file,
+            engine=raw_eng
+        )
+
+        sheets = xls.sheet_names
+
+        frames = []
+        parse_log = []
+
+
+        for sheet in sheets:
+
             try:
-                part = parse_sheet(s)
-                if not part.empty:
-                    frames.append(part)
-                parse_log.append(f"{s}: {len(part)} rows")
+
+                df_sheet = pd.read_excel(
+                    raw_data_file,
+                    sheet_name=sheet,
+                    header=None,
+                    engine=raw_eng
+                )
+
+
+                if df_sheet.empty:
+
+                    parse_log.append(
+                        f"{sheet}: empty"
+                    )
+
+                    continue
+
+
+                # ----------------------------------------------------
+                # Try original format first
+                # ----------------------------------------------------
+
+                old_part = parse_old_template(
+                    df_sheet,
+                    sheet
+                )
+
+
+                if not old_part.empty:
+
+                    frames.append(
+                        old_part
+                    )
+
+                    parse_log.append(
+                        f"{sheet}: "
+                        f"Original template → "
+                        f"{len(old_part)} rows"
+                    )
+
+                    continue
+
+
+                # ----------------------------------------------------
+                # Try 起瓦士 format
+                # ----------------------------------------------------
+
+                chivas_part = (
+                    parse_chivas_template(
+                        df_sheet,
+                        sheet
+                    )
+                )
+
+
+                if not chivas_part.empty:
+
+                    frames.append(
+                        chivas_part
+                    )
+
+                    parse_log.append(
+                        f"{sheet}: "
+                        f"Chivas template → "
+                        f"{len(chivas_part)} rows"
+                    )
+
+                    continue
+
+
+                parse_log.append(
+                    f"{sheet}: "
+                    "No supported template detected"
+                )
+
+
             except Exception as e:
-                parse_log.append(f"{s}: ERROR → {e}")
+
+                parse_log.append(
+                    f"{sheet}: ERROR → {e}"
+                )
+
+
+        # ============================================================
+        # Combine
+        # ============================================================
 
         if not frames:
-            st.error("No valid rows found in any sheet.\n\nParse summary:\n" + "\n".join(parse_log))
+
+            st.error(
+                "No valid rows found in any sheet."
+            )
+
+            st.code(
+                "\n".join(
+                    parse_log
+                )
+            )
+
             st.stop()
 
-        raw_extracted = pd.concat(frames, ignore_index=True)
+
+        raw_extracted = pd.concat(
+            frames,
+            ignore_index=True
+        )
 
         # -------- 2) Mappings (unique-only; prefer 30020076, then global) --------
         cust_map = pd.read_excel(mapping_file, sheet_name="Customer Mapping", dtype=str, engine=map_eng)
