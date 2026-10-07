@@ -5707,64 +5707,64 @@ elif transformation_choice == "30020076 酒國英豪":
             if c0 == "單據日期" and c1 == "單據編號" and c2 == "客戶編號" and c3 in ("客戶簡稱", "客戶名稱") and ("數量" in c4):
                 return True
             return False
-            def to_ymd(x) -> str:
-                """
-                Convert date to YYYYMMDD.
+        def to_ymd(x) -> str:
+            """
+            Convert date to YYYYMMDD.
             
-                Supports:
-                - Gregorian: 2026/09/01, 2026-09-01
-                - Minguo:    115/09/01, 115-09-01
-                - pandas Timestamp
+            Supports:
+            - Gregorian: 2026/09/01, 2026-09-01
+            - Minguo:    115/09/01, 115-09-01
+            - pandas Timestamp
             
-                Returns blank if conversion fails.
-                """
-                if pd.isna(x):
-                    return ""
+            Returns blank if conversion fails.
+            """
+            if pd.isna(x):
+                return ""
             
-                if isinstance(x, pd.Timestamp):
-                    return x.strftime("%Y%m%d")
+            if isinstance(x, pd.Timestamp):
+                return x.strftime("%Y%m%d")
             
-                s = str(x).strip()
+            s = str(x).strip()
             
-                m = re.match(
-                    r'^(\d{2,4})[/-](\d{1,2})[/-](\d{1,2})$',
-                    s
-                )
+            m = re.match(
+                r'^(\d{2,4})[/-](\d{1,2})[/-](\d{1,2})$',
+                s
+            )
             
-                if m:
-                    year = int(m.group(1))
-                    month = int(m.group(2))
-                    day = int(m.group(3))
-            
-                    # 民國年 -> 西元年
-                    if year < 1911:
-                        year += 1911
-            
-                    try:
-                        dt = pd.Timestamp(
-                            year=year,
-                            month=month,
-                            day=day
-                        )
-                        return dt.strftime("%Y%m%d")
-            
-                    except Exception:
-                        return ""
-            
+            if m:
+                year = int(m.group(1))
+                month = int(m.group(2))
+                day = int(m.group(3))
+        
+                # 民國年 -> 西元年
+                if year < 1911:
+                    year += 1911
+        
                 try:
-                    dt = pd.to_datetime(
-                        s,
-                        errors="coerce"
+                    dt = pd.Timestamp(
+                        year=year,
+                        month=month,
+                        day=day
                     )
-            
-                    return (
-                        dt.strftime("%Y%m%d")
-                        if pd.notna(dt)
-                        else ""
-                    )
-            
+                    return dt.strftime("%Y%m%d")
+        
                 except Exception:
                     return ""
+        
+            try:
+                dt = pd.to_datetime(
+                    s,
+                    errors="coerce"
+                )
+        
+                return (
+                    dt.strftime("%Y%m%d")
+                    if pd.notna(dt)
+                    else ""
+                )
+        
+            except Exception:
+                return ""
        
     
 
